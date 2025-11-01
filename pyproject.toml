@@ -7,7 +7,13 @@ authors = [
     { name = "vladislavradonjic", email = "vanjar@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "networkx>=3.5",
+    "polars>=1.35.1",
+    "pydantic>=2.12.3",
+    "python-dateutil>=2.9.0.post0",
+    "rich>=14.2.0",
+]
 
 [project.scripts]
 task = "task:main"
