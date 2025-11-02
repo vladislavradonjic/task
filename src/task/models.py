@@ -75,5 +75,4 @@ class Config(BaseModel):
     })
     current_context: str = "default"
     contexts: dict[str, str] = Field(default_factory=dict) # context_name -> db_path
-
     
