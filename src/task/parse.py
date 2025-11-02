@@ -1,3 +1,5 @@
+from .models import Filter, Modification
+
 def separate_sections(
     arglist: list[str], commands: set[str]
 ) -> tuple[str | None, list[str] | None, list[str] | None]:
@@ -17,3 +19,8 @@ def separate_sections(
     filter_section = arglist[:index]
     modification_section = arglist[index + 1:]
     return command, filter_section, modification_section
+
+def parse_modification(modification_section: list[str]) -> Modification:
+    """Parse the modification section into a Modification object."""
+    title = " ".join(modification_section)
+    return Modification(title=title)

@@ -1,7 +1,8 @@
 "Command implementations"
 from pathlib import Path
-from .models import Config
+from .models import Config, Task
 from . import db
+from .parse import parse_modification
 
 def init(filter_section: list[str], modification_section: list[str]):
     """Initialize database"""
@@ -18,10 +19,21 @@ def init(filter_section: list[str], modification_section: list[str]):
 
 def add(filter_section: list[str], modification_section: list[str]):
     """Add a new task"""
-    pass
+    modification = parse_modification(modification_section)
+    tasks = db.read_db()
+    next_id = db.get_next_id(tasks)
+    task = Task(id=next_id, title=modification.title)
+    tasks = db.add_task(tasks, task)
+    db.write_db(tasks)
+
+    return f"Add task with id {next_id}"
 
 def show(filter_section: list[str], modification_section: list[str]):
     """Show the tasks"""
+    pass
+
+def modify(filter_section: list[str], modification_section: list[str]):
+    """Modify a task"""
     pass
 
 def done(filter_section: list[str], modification_section: list[str]):

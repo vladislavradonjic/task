@@ -1,7 +1,8 @@
 """Database and configuration operations"""
 import os
 import json
-from .models import Config
+import polars as pl
+from .models import Config, Task
 
 CONFIG_FILE = "config.json"
 ENCODING = "utf-8"
@@ -67,3 +68,46 @@ def init_db(db_path: str) -> None:
 
     with open(db_path, "w", encoding=ENCODING) as file:
         json.dump([], file, indent=2, default=str)
+
+def write_db(tasks: pl.DataFrame) -> None:
+    """Write the tasks to the database"""
+    config = read_config()
+    tasks_dict = tasks.to_dicts()
+
+    if not os.path.exists(config.db_path):
+        init_db(config.db_path)
+
+    with open(config.db_path, "w", encoding=ENCODING) as file:
+        json.dump(tasks_dict, file, indent=2, default=str)
+
+def read_db() -> pl.DataFrame | None:
+    """Read the tasks from the database"""
+    config = read_config()
+
+    if not os.path.exists(config.db_path):
+        return None
+
+    return pl.read_json(config.db_path)
+
+def get_next_id(tasks: pl.DataFrame | None) -> int:
+    """Get the next available ID"""
+    if tasks is None or tasks.height == 0:
+        return 1
+
+    max_id = tasks["id"].max()
+
+    if max_id is None:
+        return 1
+
+    return int(max_id) + 1
+
+def add_task(tasks: pl.DataFrame, task: Task) -> pl.DataFrame:
+    """Add a task to the database"""
+    # Use mode='json' to ensure UUIDs are serialized as strings
+    # This matches how they're stored when reading from JSON
+    task_dict = task.model_dump(mode='json')
+    
+    if tasks is None:
+        return pl.DataFrame([task_dict])
+
+    return tasks.vstack(pl.DataFrame([task_dict])).sort("id", nulls_last=True)
