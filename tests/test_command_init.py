@@ -22,7 +22,12 @@ class TestInitCommand:
         
         # Mock input to confirm database creation
         with patch("builtins.input", return_value="y"):
-            command.init([], [])
+            message = command.init([], [])
+        
+        # Check return message
+        assert isinstance(message, str)
+        assert "Database initialized" in message
+        assert "default.json" in message or str(db_file) in message
         
         # Check config was created
         assert config_file.exists()
@@ -47,7 +52,10 @@ class TestInitCommand:
         monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
         
         with patch("builtins.input", return_value="y"):
-            command.init([], [])
+            message = command.init([], [])
+        
+        assert isinstance(message, str)
+        assert "Database initialized" in message
         
         config = db.read_config()
         
@@ -74,7 +82,9 @@ class TestInitCommand:
         initial_contexts = existing_config.contexts.copy()
         
         with patch("builtins.input", return_value="y"):
-            command.init([], [])
+            message = command.init([], [])
+        
+        assert isinstance(message, str)
         
         config = db.read_config()
         
@@ -90,8 +100,9 @@ class TestInitCommand:
         monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
         
         with patch("builtins.input", return_value="y"):
-            command.init([], [])
+            message = command.init([], [])
         
+        assert isinstance(message, str)
         assert config_file.exists()
     
     def test_init_with_filter_section(self, tmp_path, monkeypatch):
@@ -102,8 +113,9 @@ class TestInitCommand:
         monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
         
         with patch("builtins.input", return_value="y"):
-            command.init(["some", "filter", "args"], [])
+            message = command.init(["some", "filter", "args"], [])
         
+        assert isinstance(message, str)
         assert config_file.exists()
     
     def test_init_with_modification_section(self, tmp_path, monkeypatch):
@@ -114,8 +126,9 @@ class TestInitCommand:
         monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
         
         with patch("builtins.input", return_value="y"):
-            command.init([], ["some", "modification", "args"])
+            message = command.init([], ["some", "modification", "args"])
         
+        assert isinstance(message, str)
         assert config_file.exists()
     
     def test_init_database_exists_user_cancels(self, tmp_path, monkeypatch):
@@ -131,9 +144,12 @@ class TestInitCommand:
         monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
         
         with patch("builtins.input", return_value="n"):
-            command.init([], [])
+            message = command.init([], [])
         
-        # Database should remain unchanged
+        assert isinstance(message, str)
+        assert "Database initialized" in message
+        
+        # Database should remain unchanged (user cancelled, but init still returns message)
         with open(db_file) as f:
             data = json.load(f)
         
@@ -147,7 +163,10 @@ class TestInitCommand:
         monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
         
         with patch("builtins.input", return_value="y"):
-            command.init([], [])
+            message = command.init([], [])
+        
+        assert isinstance(message, str)
+        assert "Database initialized" in message
         
         config = db.read_config()
         

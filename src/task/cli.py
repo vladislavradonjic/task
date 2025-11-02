@@ -28,7 +28,9 @@ def main() -> None:
         print("Unknown command. Available commands: ", ", ".join(commands))
         return
 
-    func(filter_section, modification_section)
+    msg = func(filter_section, modification_section)
+    if msg:
+        print(msg)
 
 
 

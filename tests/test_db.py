@@ -224,7 +224,7 @@ class TestInitDb:
         
         assert data == [{"test": "data"}]
     
-    def test_init_db_existing_overwrite(self, tmp_path, capsys):
+    def test_init_db_existing_overwrite(self, tmp_path):
         """Test initializing when database exists and user confirms overwrite."""
         db_file = tmp_path / "db.json"
         db_file.write_text('[{"test": "old data"}]')
@@ -237,9 +237,6 @@ class TestInitDb:
             data = json.load(f)
         
         assert data == []
-        
-        captured = capsys.readouterr()
-        assert "Database initialized" in captured.out
     
     def test_init_db_existing_overwrite_lowercase_y(self, tmp_path):
         """Test overwrite with lowercase 'y'."""

@@ -14,6 +14,7 @@ def init(filter_section: list[str], modification_section: list[str]):
         config.contexts[config.current_context] = config.db_path
         db.write_config(config)
 
+    return f"Database initialized at {config.db_path}"
 
 def add(filter_section: list[str], modification_section: list[str]):
     """Add a new task"""

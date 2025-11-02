@@ -67,5 +67,3 @@ def init_db(db_path: str) -> None:
 
     with open(db_path, "w", encoding=ENCODING) as file:
         json.dump([], file, indent=2, default=str)
-
-    print(f"Database initialized at {db_path}")
