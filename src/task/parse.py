@@ -64,6 +64,26 @@ def extract_properties(section: list[str]) -> tuple[dict[str, str], list[str]]:
 
     return properties, remaining
 
+def extract_ids(section: list[str]) -> tuple[list[int], list[str]]:
+    """Extract IDs from the section"""
+    ids = [int(arg) for arg in section if arg.isdigit()]
+    remaining = [arg for arg in section if not arg.isdigit()]
+    
+    return ids, remaining
+
+def parse_filter(filter_section: list[str]) -> Filter:
+    """Parse the filter section into a Filter object."""
+    ids, remaining = extract_ids(filter_section)
+    filter_dict, remaining = extract_properties(remaining)
+    tags, remaining = extract_tags(remaining)
+    title = " ".join(remaining)
+
+    filter_dict["ids"] = ids
+    filter_dict["tags"] = tags
+    filter_dict["title"] = title
+
+    return Filter(**filter_dict)
+
 def parse_modification(modification_section: list[str]) -> Modification:
     """Parse the modification section into a Modification object."""
     modification_dict, remaining = extract_properties(modification_section)

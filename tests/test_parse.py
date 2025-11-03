@@ -1,8 +1,8 @@
 """Tests for command parsing functions."""
 import pytest
 
-from task.parse import parse_modification, separate_sections, extract_tags, extract_properties
-from task.models import Modification
+from task.parse import parse_modification, separate_sections, extract_tags, extract_properties, extract_ids, parse_filter
+from task.models import Modification, Filter
 
 
 class TestExtractTags:
@@ -371,4 +371,219 @@ class TestSeparateSections:
         assert cmd == "show"
         assert filter_section == []
         assert mod_section == ["add", "Task"]
+
+
+class TestExtractIds:
+    """Tests for extract_ids function."""
+    
+    def test_extract_ids_single_id(self):
+        """Test extracting single ID."""
+        ids, remaining = extract_ids(["1", "task"])
+        
+        assert ids == [1]
+        assert remaining == ["task"]
+    
+    def test_extract_ids_multiple_ids(self):
+        """Test extracting multiple IDs."""
+        ids, remaining = extract_ids(["1", "2", "3", "task"])
+        
+        assert ids == [1, 2, 3]
+        assert remaining == ["task"]
+    
+    def test_extract_ids_only_ids(self):
+        """Test extracting when all arguments are IDs."""
+        ids, remaining = extract_ids(["1", "2", "3"])
+        
+        assert ids == [1, 2, 3]
+        assert remaining == []
+    
+    def test_extract_ids_no_ids(self):
+        """Test extracting when no IDs are present."""
+        ids, remaining = extract_ids(["task", "project:work"])
+        
+        assert ids == []
+        assert remaining == ["task", "project:work"]
+    
+    def test_extract_ids_mixed_order(self):
+        """Test extracting IDs in mixed order with other arguments."""
+        ids, remaining = extract_ids(["task", "1", "project:work", "2", "priority:H"])
+        
+        assert ids == [1, 2]
+        assert remaining == ["task", "project:work", "priority:H"]
+    
+    def test_extract_ids_empty_list(self):
+        """Test extracting from empty list."""
+        ids, remaining = extract_ids([])
+        
+        assert ids == []
+        assert remaining == []
+    
+    def test_extract_ids_numeric_strings_only(self):
+        """Test that only purely numeric strings are extracted."""
+        ids, remaining = extract_ids(["1", "123", "abc", "1a", "-5", "0"])
+        
+        assert ids == [1, 123, 0]  # Only pure digits
+        assert remaining == ["abc", "1a", "-5"]  # Non-digit strings kept
+
+
+class TestParseFilter:
+    """Tests for parse_filter function."""
+    
+    def test_parse_filter_empty(self):
+        """Test parsing empty filter section."""
+        filter_obj = parse_filter([])
+        
+        assert isinstance(filter_obj, Filter)
+        assert filter_obj.ids == []
+        assert filter_obj.title == ""
+        assert filter_obj.project is None
+        assert filter_obj.priority is None
+        assert filter_obj.tags == []
+    
+    def test_parse_filter_ids_only(self):
+        """Test parsing filter with only IDs."""
+        filter_obj = parse_filter(["1", "2", "3"])
+        
+        assert filter_obj.ids == [1, 2, 3]
+        assert filter_obj.title == ""
+        assert filter_obj.project is None
+    
+    def test_parse_filter_title_only(self):
+        """Test parsing filter with only title text."""
+        filter_obj = parse_filter(["Buy", "groceries"])
+        
+        assert filter_obj.ids == []
+        assert filter_obj.title == "Buy groceries"
+        assert filter_obj.project is None
+    
+    def test_parse_filter_with_project(self):
+        """Test parsing filter with project property."""
+        filter_obj = parse_filter(["project:work"])
+        
+        assert filter_obj.ids == []
+        assert filter_obj.title == ""
+        assert filter_obj.project == "work"
+    
+    def test_parse_filter_with_priority(self):
+        """Test parsing filter with priority property."""
+        filter_obj = parse_filter(["priority:H"])
+        
+        assert filter_obj.ids == []
+        assert filter_obj.title == ""
+        assert filter_obj.priority == "H"
+    
+    def test_parse_filter_with_tags(self):
+        """Test parsing filter with tags."""
+        filter_obj = parse_filter(["+urgent", "+shopping"])
+        
+        assert filter_obj.ids == []
+        assert filter_obj.title == ""
+        assert filter_obj.tags == ["+urgent", "+shopping"]
+    
+    def test_parse_filter_with_ids_and_project(self):
+        """Test parsing filter with IDs and project."""
+        filter_obj = parse_filter(["1", "2", "project:work"])
+        
+        assert filter_obj.ids == [1, 2]
+        assert filter_obj.project == "work"
+        assert filter_obj.title == ""
+    
+    def test_parse_filter_with_ids_and_title(self):
+        """Test parsing filter with IDs and title."""
+        filter_obj = parse_filter(["1", "Buy", "groceries"])
+        
+        assert filter_obj.ids == [1]
+        assert filter_obj.title == "Buy groceries"
+    
+    def test_parse_filter_with_all_properties(self):
+        """Test parsing filter with all types of properties."""
+        filter_obj = parse_filter([
+            "1", "2",
+            "project:work",
+            "priority:M",
+            "+urgent",
+            "Buy", "groceries"
+        ])
+        
+        assert filter_obj.ids == [1, 2]
+        assert filter_obj.project == "work"
+        assert filter_obj.priority == "M"
+        assert filter_obj.tags == ["+urgent"]
+        assert filter_obj.title == "Buy groceries"
+    
+    def test_parse_filter_with_status(self):
+        """Test parsing filter with status property."""
+        filter_obj = parse_filter(["status:pending"])
+        
+        assert filter_obj.ids == []
+        assert filter_obj.status == "pending"
+    
+    def test_parse_filter_with_due_date(self):
+        """Test parsing filter with due date."""
+        filter_obj = parse_filter(["due:tomorrow"])
+        
+        from datetime import date
+        assert filter_obj.ids == []
+        assert isinstance(filter_obj.due, date)
+        assert filter_obj.due >= date.today()
+    
+    def test_parse_filter_with_scheduled_date(self):
+        """Test parsing filter with scheduled date."""
+        filter_obj = parse_filter(["scheduled:2025-12-25"])
+        
+        from datetime import date
+        assert filter_obj.ids == []
+        assert filter_obj.scheduled == date(2025, 12, 25)
+    
+    def test_parse_filter_with_depends(self):
+        """Test parsing filter with depends property."""
+        filter_obj = parse_filter(["depends:5"])
+        
+        assert filter_obj.ids == []
+        assert filter_obj.depends == 5
+    
+    def test_parse_filter_with_blocks(self):
+        """Test parsing filter with blocks property."""
+        filter_obj = parse_filter(["blocks:3"])
+        
+        assert filter_obj.ids == []
+        assert filter_obj.blocks == 3
+    
+    def test_parse_filter_priority_case_insensitive(self):
+        """Test that priority is normalized to uppercase."""
+        filter_obj = parse_filter(["priority:h"])
+        
+        assert filter_obj.priority == "H"
+    
+    def test_parse_filter_invalid_priority_ignored(self):
+        """Test that invalid priority is ignored."""
+        filter_obj = parse_filter(["priority:invalid"])
+        
+        assert filter_obj.priority is None
+    
+    def test_parse_filter_invalid_date_ignored(self):
+        """Test that invalid date is ignored."""
+        filter_obj = parse_filter(["due:not-a-date"])
+        
+        assert filter_obj.due is None
+    
+    def test_parse_filter_complex_example(self):
+        """Test a complex real-world filter example."""
+        filter_obj = parse_filter([
+            "1", "2", "3",
+            "project:home",
+            "priority:H",
+            "status:active",
+            "+urgent",
+            "-old",
+            "Buy", "groceries", "today"
+        ])
+        
+        from datetime import date
+        assert filter_obj.ids == [1, 2, 3]
+        assert filter_obj.project == "home"
+        assert filter_obj.priority == "H"
+        assert filter_obj.status == "active"
+        assert filter_obj.tags == ["+urgent", "-old"]
+        assert filter_obj.title == "Buy groceries today"
 
