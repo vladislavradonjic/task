@@ -109,6 +109,41 @@ class TestExtractProperties:
         
         assert props == {}
         assert remaining == []
+    
+    def test_extract_properties_priority_case_insensitive(self):
+        """Test that priority is normalized to uppercase."""
+        props, remaining = extract_properties(["Task", "priority:h"])
+        
+        assert props == {"priority": "H"}
+        assert remaining == ["Task"]
+    
+    def test_extract_properties_priority_lowercase_m(self):
+        """Test that lowercase 'm' is normalized to 'M'."""
+        props, remaining = extract_properties(["Task", "priority:m"])
+        
+        assert props == {"priority": "M"}
+        assert remaining == ["Task"]
+    
+    def test_extract_properties_priority_lowercase_l(self):
+        """Test that lowercase 'l' is normalized to 'L'."""
+        props, remaining = extract_properties(["Task", "priority:l"])
+        
+        assert props == {"priority": "L"}
+        assert remaining == ["Task"]
+    
+    def test_extract_properties_priority_invalid_ignored(self):
+        """Test that invalid priority values are ignored."""
+        props, remaining = extract_properties(["Task", "priority:invalid"])
+        
+        assert props == {}
+        assert remaining == ["Task"]
+    
+    def test_extract_properties_priority_mixed_case_ignored(self):
+        """Test that invalid mixed-case priority is ignored."""
+        props, remaining = extract_properties(["Task", "priority:Hi"])
+        
+        assert props == {}
+        assert remaining == ["Task"]
 
 
 class TestParseModification:
@@ -185,11 +220,11 @@ class TestParseModification:
         assert modification.title == "Task"
         assert modification.tags == ["-old"]
     
-    def test_parse_modification_lowercase_priority_fails(self):
-        """Test that lowercase priority fails validation (must be H, M, or L)."""
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            parse_modification(["Task", "priority:h"])
+    def test_parse_modification_lowercase_priority_normalized(self):
+        """Test that lowercase priority is normalized to uppercase."""
+        modification = parse_modification(["Task", "priority:h"])
+        
+        assert modification.priority == "H"  # Should be normalized to uppercase
 
 
 class TestSeparateSections:

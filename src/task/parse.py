@@ -32,6 +32,13 @@ def extract_tags(section: list[str]) -> tuple[list[str], list[str]]:
     
     return tags, remaining
 
+def _normalize_priority(priority: str) -> str | None:
+    """Normalize priority to uppercase"""
+    if priority.upper() in ["H", "M", "L"]:
+        return priority.upper()
+    else:
+        return None
+
 def extract_properties(section: list[str]) -> tuple[dict[str, str], list[str]]:
     """Extract properties from the section"""
     properties = {}
@@ -40,6 +47,10 @@ def extract_properties(section: list[str]) -> tuple[dict[str, str], list[str]]:
         if ":" in arg and not arg.endswith(":"):
             key, value = arg.split(":", 1)
             value = value.strip("'")
+            if key.strip() == "priority":
+                value = _normalize_priority(value)
+                if value is None:
+                    continue
             properties[key.strip()] = value
         else:
             remaining.append(arg)
