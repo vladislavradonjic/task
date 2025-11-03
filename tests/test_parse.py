@@ -144,6 +144,46 @@ class TestExtractProperties:
         
         assert props == {}
         assert remaining == ["Task"]
+    
+    def test_extract_properties_due_date(self):
+        """Test extracting due date property."""
+        props, remaining = extract_properties(["Task", "due:tomorrow"])
+        
+        # Should parse "tomorrow" as a date
+        from datetime import date
+        assert isinstance(props["due"], date)
+        assert props["due"] >= date.today()
+        assert remaining == ["Task"]
+    
+    def test_extract_properties_scheduled_date(self):
+        """Test extracting scheduled date property."""
+        props, remaining = extract_properties(["Task", "scheduled:2025-12-25"])
+        
+        # Should parse as a date
+        from datetime import date
+        assert isinstance(props["scheduled"], date)
+        assert props["scheduled"] == date(2025, 12, 25)
+        assert remaining == ["Task"]
+    
+    def test_extract_properties_both_dates(self):
+        """Test extracting both due and scheduled dates."""
+        props, remaining = extract_properties([
+            "Task", "due:tomorrow", "scheduled:2025-12-01"
+        ])
+        
+        from datetime import date
+        assert isinstance(props["due"], date)
+        assert isinstance(props["scheduled"], date)
+        assert props["scheduled"] == date(2025, 12, 1)
+        assert remaining == ["Task"]
+    
+    def test_extract_properties_invalid_date_ignored(self):
+        """Test that invalid date values are ignored."""
+        props, remaining = extract_properties(["Task", "due:not-a-date"])
+        
+        # Invalid date should be ignored (not in props)
+        assert "due" not in props
+        assert remaining == ["Task"]
 
 
 class TestParseModification:
@@ -225,6 +265,54 @@ class TestParseModification:
         modification = parse_modification(["Task", "priority:h"])
         
         assert modification.priority == "H"  # Should be normalized to uppercase
+    
+    def test_parse_modification_with_due_date(self):
+        """Test parsing with due date property."""
+        modification = parse_modification(["Task", "due:tomorrow"])
+        
+        from datetime import date
+        assert modification.title == "Task"
+        assert isinstance(modification.due, date)
+        assert modification.due >= date.today()
+    
+    def test_parse_modification_with_scheduled_date(self):
+        """Test parsing with scheduled date property."""
+        modification = parse_modification(["Task", "scheduled:monday"])
+        
+        from datetime import date
+        assert modification.title == "Task"
+        assert isinstance(modification.scheduled, date)
+        assert modification.scheduled >= date.today()
+    
+    def test_parse_modification_with_both_dates(self):
+        """Test parsing with both due and scheduled dates."""
+        modification = parse_modification([
+            "Complete", "project", "due:2025-12-25", "scheduled:2025-12-01"
+        ])
+        
+        from datetime import date
+        assert modification.title == "Complete project"
+        assert modification.due == date(2025, 12, 25)
+        assert modification.scheduled == date(2025, 12, 1)
+    
+    def test_parse_modification_with_all_properties_including_dates(self):
+        """Test parsing with all properties including dates."""
+        modification = parse_modification([
+            "Complete", "project", 
+            "project:work", 
+            "priority:M", 
+            "due:tomorrow",
+            "scheduled:monday",
+            "+urgent"
+        ])
+        
+        from datetime import date
+        assert modification.title == "Complete project"
+        assert modification.project == "work"
+        assert modification.priority == "M"
+        assert isinstance(modification.due, date)
+        assert isinstance(modification.scheduled, date)
+        assert modification.tags == ["+urgent"]
 
 
 class TestSeparateSections:

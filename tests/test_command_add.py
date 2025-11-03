@@ -89,7 +89,7 @@ class TestAddCommand:
         
         # Empty modification section should return error message
         message = command.add([], [])
-        assert message == "Modification section is empty"
+        assert message == "Modification section is empty; Task not created."
         
         # No task should be added
         tasks = db.read_db()
@@ -279,4 +279,113 @@ class TestAddCommand:
         assert tasks["priority"][0] == "M"
         assert "urgent" in tasks["tags"][0]
         assert "documentation" in tasks["tags"][0]
+    
+    def test_add_task_with_due_date(self, tmp_path, monkeypatch):
+        """Test adding task with due date."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], ["Task", "due:tomorrow"])
+        
+        tasks = db.read_db()
+        from datetime import date
+        assert tasks["title"][0] == "Task"
+        # Dates are stored as strings in JSON, so compare as string or parse
+        due_str = tasks["due"][0]
+        due_date = date.fromisoformat(due_str) if isinstance(due_str, str) else due_str
+        assert isinstance(due_date, date)
+        assert due_date >= date.today()
+    
+    def test_add_task_with_scheduled_date(self, tmp_path, monkeypatch):
+        """Test adding task with scheduled date."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], ["Task", "scheduled:2025-12-25"])
+        
+        tasks = db.read_db()
+        from datetime import date
+        assert tasks["title"][0] == "Task"
+        # Dates are stored as strings in JSON
+        scheduled_str = tasks["scheduled"][0]
+        scheduled_date = date.fromisoformat(scheduled_str) if isinstance(scheduled_str, str) else scheduled_str
+        assert scheduled_date == date(2025, 12, 25)
+    
+    def test_add_task_with_both_dates(self, tmp_path, monkeypatch):
+        """Test adding task with both due and scheduled dates."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], [
+            "Complete", "project",
+            "due:tomorrow",
+            "scheduled:2025-12-01"
+        ])
+        
+        tasks = db.read_db()
+        from datetime import date
+        assert tasks["title"][0] == "Complete project"
+        # Dates are stored as strings in JSON
+        due_str = tasks["due"][0]
+        due_date = date.fromisoformat(due_str) if isinstance(due_str, str) else due_str
+        assert isinstance(due_date, date)
+        scheduled_str = tasks["scheduled"][0]
+        scheduled_date = date.fromisoformat(scheduled_str) if isinstance(scheduled_str, str) else scheduled_str
+        assert scheduled_date == date(2025, 12, 1)
+    
+    def test_add_task_with_all_fields_including_dates(self, tmp_path, monkeypatch):
+        """Test adding task with all fields including dates."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], [
+            "Complete", "project", "documentation",
+            "project:work",
+            "priority:M",
+            "due:2025-12-25",
+            "scheduled:2025-12-01",
+            "+urgent",
+            "+documentation"
+        ])
+        
+        tasks = db.read_db()
+        from datetime import date
+        task_dict = tasks.to_dicts()[0]
+        
+        assert task_dict["title"] == "Complete project documentation"
+        assert task_dict["project"] == "work"
+        assert task_dict["priority"] == "M"
+        # Dates are stored as strings in JSON
+        due_str = task_dict["due"]
+        due_date = date.fromisoformat(due_str) if isinstance(due_str, str) else due_str
+        assert due_date == date(2025, 12, 25)
+        scheduled_str = task_dict["scheduled"]
+        scheduled_date = date.fromisoformat(scheduled_str) if isinstance(scheduled_str, str) else scheduled_str
+        assert scheduled_date == date(2025, 12, 1)
+        assert "urgent" in task_dict["tags"]
+        assert "documentation" in task_dict["tags"]
 

@@ -20,7 +20,7 @@ def init(filter_section: list[str], modification_section: list[str]):
 def add(filter_section: list[str], modification_section: list[str]):
     """Add a new task"""
     if not modification_section or len(modification_section) == 0:
-        return "Modification section is empty"
+        return "Modification section is empty; Task not created."
     modification = parse_modification(modification_section)
     tasks = db.read_db()
     next_id = db.get_next_id(tasks)
@@ -35,7 +35,9 @@ def add(filter_section: list[str], modification_section: list[str]):
         project=modification.project,
         priority=modification.priority,
         tags=tags,
-        # TODO: add other fields
+        due=modification.due,
+        scheduled=modification.scheduled,
+        # TODO: add depends and blocks
     )
     tasks = db.add_task(tasks, task)
     db.write_db(tasks)

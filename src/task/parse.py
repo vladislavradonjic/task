@@ -1,4 +1,5 @@
 from .models import Filter, Modification
+from .dates import parse_date_string
 
 def separate_sections(
     arglist: list[str], commands: set[str]
@@ -46,11 +47,17 @@ def extract_properties(section: list[str]) -> tuple[dict[str, str], list[str]]:
     for arg in section:
         if ":" in arg and not arg.endswith(":"):
             key, value = arg.split(":", 1)
-            value = value.strip("'")
+            key = key.strip()
+            value = value.strip("'").strip()
+            # normalize priority
             if key.strip() == "priority":
                 value = _normalize_priority(value)
-                if value is None:
-                    continue
+            # parse dates
+            elif key.strip() in ["due", "scheduled"]:
+                value = parse_date_string(value)
+            # handle null values
+            if value is None:
+                continue
             properties[key.strip()] = value
         else:
             remaining.append(arg)
