@@ -19,14 +19,28 @@ def init(filter_section: list[str], modification_section: list[str]):
 
 def add(filter_section: list[str], modification_section: list[str]):
     """Add a new task"""
+    if not modification_section or len(modification_section) == 0:
+        return "Modification section is empty"
     modification = parse_modification(modification_section)
     tasks = db.read_db()
     next_id = db.get_next_id(tasks)
-    task = Task(id=next_id, title=modification.title)
+    # ignore tags starting with "-", as there is nothing to remove
+    tags = []
+    if modification.tags:
+        tags = [tag.lstrip("+") for tag in modification.tags if tag.startswith("+")]
+    
+    task = Task(
+        id=next_id, 
+        title=modification.title,
+        project=modification.project,
+        priority=modification.priority,
+        tags=tags,
+        # TODO: add other fields
+    )
     tasks = db.add_task(tasks, task)
     db.write_db(tasks)
 
-    return f"Add task with id {next_id}"
+    return f"Added task with id {next_id}"
 
 def show(filter_section: list[str], modification_section: list[str]):
     """Show the tasks"""

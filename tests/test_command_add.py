@@ -27,7 +27,7 @@ class TestAddCommand:
         message = command.add([], ["Buy", "groceries"])
         
         # Check message
-        assert "Add task with id 1" in message or "task 1" in message.lower()
+        assert "Added task with id 1" in message or "task 1" in message.lower()
         
         # Check database was created and has task
         assert db_file.exists()
@@ -77,7 +77,7 @@ class TestAddCommand:
         assert "task" in message.lower()
     
     def test_add_task_with_empty_title(self, tmp_path, monkeypatch):
-        """Test adding task with empty modification section."""
+        """Test adding task with empty modification section returns error message."""
         config_file = tmp_path / "config.json"
         db_file = tmp_path / "db" / "default.json"
         
@@ -87,11 +87,13 @@ class TestAddCommand:
         monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
         monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
         
+        # Empty modification section should return error message
         message = command.add([], [])
+        assert message == "Modification section is empty"
         
+        # No task should be added
         tasks = db.read_db()
-        assert tasks["title"][0] == ""
-        assert "task" in message.lower()
+        assert tasks is None
     
     def test_add_task_persists_to_file(self, tmp_path, monkeypatch):
         """Test that added task is persisted to JSON file."""
@@ -178,4 +180,103 @@ class TestAddCommand:
         assert tasks.height == 3
         assert tasks["title"].to_list() == ["First", "Second", "Third"]
         assert tasks["id"].to_list() == [1, 2, 3]
+    
+    def test_add_task_with_project(self, tmp_path, monkeypatch):
+        """Test adding task with project property."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], ["Buy", "groceries", "project:home"])
+        
+        tasks = db.read_db()
+        assert tasks["title"][0] == "Buy groceries"
+        assert tasks["project"][0] == "home"
+    
+    def test_add_task_with_priority(self, tmp_path, monkeypatch):
+        """Test adding task with priority property."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], ["Urgent", "task", "priority:H"])
+        
+        tasks = db.read_db()
+        assert tasks["title"][0] == "Urgent task"
+        assert tasks["priority"][0] == "H"
+    
+    def test_add_task_with_tags(self, tmp_path, monkeypatch):
+        """Test adding task with tags."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], ["Task", "+urgent", "+shopping"])
+        
+        tasks = db.read_db()
+        assert tasks["title"][0] == "Task"
+        # Tags should be stored without + prefix
+        assert "urgent" in tasks["tags"][0]
+        assert "shopping" in tasks["tags"][0]
+        assert len(tasks["tags"][0]) == 2
+    
+    def test_add_task_with_minus_tag_ignored(self, tmp_path, monkeypatch):
+        """Test that minus tags are ignored when adding (nothing to remove)."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], ["Task", "+urgent", "-old"])
+        
+        tasks = db.read_db()
+        # Only +urgent should be added (minus tag ignored)
+        # Access tags from the first row
+        task_dict = tasks.to_dicts()[0]
+        assert task_dict["tags"] == ["urgent"]
+    
+    def test_add_task_with_all_properties(self, tmp_path, monkeypatch):
+        """Test adding task with project, priority, and tags."""
+        config_file = tmp_path / "config.json"
+        db_file = tmp_path / "db" / "default.json"
+        
+        config = Config(db_path=str(db_file))
+        db.write_config(config)
+        
+        monkeypatch.setattr(db, "get_config_path", lambda: str(config_file))
+        monkeypatch.setattr(db, "expand_path", lambda p: str(Path(p).resolve()))
+        
+        command.add([], [
+            "Complete", "project", "documentation",
+            "project:work",
+            "priority:M",
+            "+urgent",
+            "+documentation"
+        ])
+        
+        tasks = db.read_db()
+        assert tasks["title"][0] == "Complete project documentation"
+        assert tasks["project"][0] == "work"
+        assert tasks["priority"][0] == "M"
+        assert "urgent" in tasks["tags"][0]
+        assert "documentation" in tasks["tags"][0]
 
