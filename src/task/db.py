@@ -1,8 +1,9 @@
 """Database and configuration operations"""
 import os
 import json
+from datetime import date
 import polars as pl
-from .models import Config, Task
+from .models import Config, Task, Filter
 
 CONFIG_FILE = "config.json"
 ENCODING = "utf-8"
@@ -111,3 +112,32 @@ def add_task(tasks: pl.DataFrame, task: Task) -> pl.DataFrame:
         return pl.DataFrame([task_dict])
 
     return tasks.vstack(pl.DataFrame([task_dict])).sort("id", nulls_last=True)
+
+def filter_tasks(tasks: pl.DataFrame, filter_obj: Filter) -> pl.DataFrame:
+    """Filter the tasks based on the filter"""
+    if tasks is None or tasks.height == 0:
+        return pl.DataFrame()
+
+    filtered = tasks
+
+    for field, value in filter_obj:
+        if not value:
+            continue
+
+        if field == "ids":
+            filtered = filtered.filter(pl.col("id").is_in(value))
+        elif field == "title":
+            filtered = filtered.filter(
+                pl.col("title").str.to_lowercase().str.contains(value.lower(), literal=False)
+            )
+        elif field in ["project", "priority", "due", "scheduled"]:
+            filtered = filtered.filter(pl.col(field) == value)
+        elif field == "tags":
+            for tag in value:
+                if tag.startswith("+"):
+                    filtered = filtered.filter(pl.col("tags").str.contains(tag.lstrip("+")))
+                elif tag.startswith("-"):
+                    filtered = filtered.filter(~pl.col("tags").str.contains(tag.lstrip("-")))
+    
+    return filtered
+

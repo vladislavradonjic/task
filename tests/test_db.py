@@ -1,12 +1,14 @@
 """Tests for database and configuration operations."""
 import os
 import json
+from datetime import date
+import polars as pl
 import pytest
 from pathlib import Path
 from unittest.mock import patch, mock_open
 
 from task import db
-from task.models import Config
+from task.models import Config, Filter
 
 
 class TestGetConfigPath:
@@ -183,6 +185,81 @@ class TestReadConfig:
         assert config.db_path == "/test/db.json"
         assert config.current_context == "default"  # Should use default
         assert isinstance(config.urgency_coefficients, dict)  # Should use default
+
+
+@pytest.fixture
+def sample_tasks_df():
+    """Fixture providing a sample tasks DataFrame."""
+    return pl.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "title": ["Buy milk", "Plan project", "Review notes"],
+            "project": ["home", "work", "home"],
+            "priority": ["H", "M", "L"],
+            "due": [
+                date(2025, 1, 10),
+                date(2025, 2, 1),
+                None,
+            ],
+            "scheduled": [
+                None,
+                date(2025, 1, 20),
+                None,
+            ],
+            "tags": [
+                "errand home",
+                "work",
+                "home reading",
+            ],
+            "status": ["pending", "active", "pending"],
+        }
+    )
+
+
+class TestFilterTasks:
+    """Tests for filter_tasks function."""
+
+    def test_filter_tasks_none_returns_empty(self):
+        """Should return empty DataFrame when tasks are None."""
+        result = db.filter_tasks(None, Filter())
+        assert isinstance(result, pl.DataFrame)
+        assert result.height == 0
+
+    def test_filter_tasks_empty_filter_returns_all(self, sample_tasks_df):
+        """Empty filter should return all tasks."""
+        result = db.filter_tasks(sample_tasks_df, Filter())
+        assert result.height == sample_tasks_df.height
+        assert result["id"].to_list() == [1, 2, 3]
+
+    def test_filter_tasks_by_ids(self, sample_tasks_df):
+        """Filtering by IDs should keep matching tasks only."""
+        result = db.filter_tasks(sample_tasks_df, Filter(ids=[2]))
+        assert result.height == 1
+        assert result["id"].to_list() == [2]
+
+    def test_filter_tasks_by_title_case_insensitive(self, sample_tasks_df):
+        """Title filter should be case-insensitive."""
+        result = db.filter_tasks(sample_tasks_df, Filter(title="PLAN"))
+        assert result.height == 1
+        assert result["title"].to_list() == ["Plan project"]
+
+    def test_filter_tasks_by_project_and_priority(self, sample_tasks_df):
+        """Project and priority filters should match exactly."""
+        result = db.filter_tasks(sample_tasks_df, Filter(project="home", priority="H"))
+        assert result.height == 1
+        assert result["id"].to_list() == [1]
+
+    def test_filter_tasks_by_due_date(self, sample_tasks_df):
+        """Due date filter should match ISO-formatted dates."""
+        result = db.filter_tasks(sample_tasks_df, Filter(due=date(2025, 1, 10)))
+        assert result.height == 1
+        assert result["id"].to_list() == [1]
+
+    def test_filter_tasks_by_tags_include_and_exclude(self, sample_tasks_df):
+        """Tag filters should handle inclusion and exclusion."""
+        result = db.filter_tasks(sample_tasks_df, Filter(tags=["+home", "-errand"]))
+        assert result.height == 1
+        assert result["id"].to_list() == [3]
 
 
 class TestInitDb:

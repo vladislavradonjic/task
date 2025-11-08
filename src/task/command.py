@@ -2,7 +2,7 @@
 from pathlib import Path
 from .models import Config, Task
 from . import db
-from .parse import parse_modification
+from .parse import parse_modification, parse_filter
 
 def init(filter_section: list[str], modification_section: list[str]):
     """Initialize database"""
@@ -46,7 +46,15 @@ def add(filter_section: list[str], modification_section: list[str]):
 
 def show(filter_section: list[str], modification_section: list[str]):
     """Show the tasks"""
-    pass
+    filter_obj = parse_filter(filter_section)
+    tasks = db.read_db()
+    filtered_tasks = db.filter_tasks(tasks, filter_obj)
+
+    if filtered_tasks is None or filtered_tasks.height == 0:
+        return "No tasks found"
+
+    # TODO: format using rich
+    return filtered_tasks
 
 def modify(filter_section: list[str], modification_section: list[str]):
     """Modify a task"""
