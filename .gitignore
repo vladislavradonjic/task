@@ -9,5 +9,6 @@ wheels/
 # Virtual environments
 .venv
 
-# documentation
-doc/
+# Documentation
+docs/
+.cursor/rules/
