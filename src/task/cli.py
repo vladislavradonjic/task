@@ -35,10 +35,9 @@ def main() -> None:
         for name in sorted(known):
             print(f"  {name}", file=sys.stderr)
         sys.exit(1)
-    
-    print("filter:", filter_args)
-    print("command:", command)
-    print("modify:", modify_args)
+
+    fn = getattr(commands, f"{command}_")
+    fn(filter_args, modify_args)
 
 
 if __name__ == "__main__":
