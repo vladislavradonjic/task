@@ -1,6 +1,7 @@
 import sys
 
-from task import commands
+from task import commands, storage
+from task.events import apply_event
 from task.parse import parse_filter, parse_modification
 
 
@@ -38,10 +39,28 @@ def main() -> None:
         sys.exit(1)
 
     fn = getattr(commands, f"{command}_")
-    result = fn(parse_filter(filter_args), parse_modification(modify_args))
-    if result is not None:
-        _events, message = result
+    parsed_filter = parse_filter(filter_args)
+    parsed_modification = parse_modification(modify_args)
+
+    if command == "init":
+        _, message = fn(parsed_filter, parsed_modification)
         print(message)
+        return
+
+    d = storage.data_dir()
+    if not (d / "state.json").exists():
+        print("Not initialized. Run `task init` first.", file=sys.stderr)
+        sys.exit(2)
+
+    context = storage.active_context(d)
+    tasks = storage.load_tasks(context)
+    events, message = fn(tasks, parsed_filter, parsed_modification)
+    for event in events:
+        storage.append_event(context, event)
+        tasks = apply_event(tasks, event)
+    storage.save_snapshot(context, tasks)
+    print(message)
+
 
 
 if __name__ == "__main__":

@@ -5,16 +5,14 @@ from task.models import CreatedEvent, ParsedFilter, ParsedModification, Event, T
 from task.storage import data_dir as get_data_dir
 
 
-def add_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     task = Task(description=modify_args.description)
     event = CreatedEvent(task_id=task.id, snapshot=task)
     return [event], f"Created task {task.id}"
 
 
-def list_(filter_args: ParsedFilter, modify_args: ParsedModification) -> None:
-    """Dummy list command."""
-    print("filter_args:", filter_args)
-    print("modify_args:", modify_args)
+def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    return [], "list not implemented"
 
 
 def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:

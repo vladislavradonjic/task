@@ -5,7 +5,7 @@ from task.models import CreatedEvent, ParsedFilter, ParsedModification
 
 
 def test_add_returns_created_event():
-    events, message = add_(ParsedFilter(), ParsedModification(description="buy milk"))
+    events, message = add_([], ParsedFilter(), ParsedModification(description="buy milk"))
     assert len(events) == 1
     assert isinstance(events[0], CreatedEvent)
     assert events[0].snapshot.description == "buy milk"
@@ -13,7 +13,7 @@ def test_add_returns_created_event():
 
 
 def test_add_task_id_matches_snapshot():
-    events, _ = add_(ParsedFilter(), ParsedModification(description="test"))
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="test"))
     assert events[0].task_id == events[0].snapshot.id
 
 
