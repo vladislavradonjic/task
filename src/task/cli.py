@@ -38,7 +38,10 @@ def main() -> None:
         sys.exit(1)
 
     fn = getattr(commands, f"{command}_")
-    fn(parse_filter(filter_args), parse_modification(modify_args))
+    result = fn(parse_filter(filter_args), parse_modification(modify_args))
+    if result is not None:
+        _events, message = result
+        print(message)
 
 
 if __name__ == "__main__":
