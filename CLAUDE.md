@@ -9,6 +9,11 @@ Personal taskwarrior clone in Python 3.12+, primarily for Windows. Author-only p
 - `tests/` — empty. Roadmap explicitly notes "Try to lead with tests next time."
 - `pyproject.toml` — runtime deps (`networkx`, `polars`, `pydantic`, `python-dateutil`, `rich`); dev deps (`pytest`). Don't add new ones casually.
 
+## Tooling
+
+- Use `uv run pytest` to run tests and `uv run ruff` for linting/formatting.
+- Do not activate the venv directly or invoke `.venv/bin/*`.
+
 ### Planned modules
 
 The implementation will add (per [docs/roadmap.md](docs/roadmap.md) "Project skeleton"):
