@@ -1,6 +1,7 @@
 import sys
 
 from task import commands
+from task.parse import parse_filter, parse_modification
 
 
 def _command_names() -> set[str]:
@@ -37,7 +38,7 @@ def main() -> None:
         sys.exit(1)
 
     fn = getattr(commands, f"{command}_")
-    fn(filter_args, modify_args)
+    fn(parse_filter(filter_args), parse_modification(modify_args))
 
 
 if __name__ == "__main__":
