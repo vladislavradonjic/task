@@ -12,6 +12,10 @@ from task.storage import active_context, append_event, assign_display_ids, data_
 
 
 def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Add a new task.
+
+    Usage: task add <description> [+tag] [-tag] [property:value]
+    """
     tags = [t.lstrip("+") for t in modify_args.tags if t.startswith("+")]
     task = Task(
         description=modify_args.description,
@@ -23,6 +27,12 @@ def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModifi
 
 
 def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """List tasks.
+
+    Usage: task [filter] list [status:pending|waiting|done]
+
+    Shows pending always; waiting only when fewer than 10 pending exist.
+    """
     status_filter = filter_args.properties.get("status")
     if status_filter:
         visible = [t for t in tasks if t.status == status_filter]
@@ -81,6 +91,12 @@ def _fmt(tasks: list[Task]) -> str:
 
 
 def done_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Mark tasks done.
+
+    Usage: task <id> done
+
+    Refuses on waiting tasks — clear wait: first.
+    """
     if not filter_args.ids:
         return [], "No filter given; nothing done."
     matched = [t for t in tasks if t.id in set(filter_args.ids)]
@@ -95,6 +111,10 @@ def done_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
 
 
 def delete_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Delete tasks.
+
+    Usage: task <id> delete
+    """
     if not filter_args.ids:
         return [], "No filter given; nothing deleted."
     matched = [t for t in tasks if t.id in set(filter_args.ids)]
@@ -137,6 +157,12 @@ def _compute_changes(task: Task, modify_args: ParsedModification) -> dict[str, F
 
 
 def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Modify task fields.
+
+    Usage: task <id> modify [description] [+tag] [-tag] [property:value] [property:]
+
+    Use property: (empty value) to clear a field.
+    """
     if not filter_args.ids:
         return [], "No filter given; nothing modified."
     matched = [t for t in tasks if t.id in set(filter_args.ids)]
@@ -153,6 +179,12 @@ def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
 
 
 def undo_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Undo the last action.
+
+    Usage: task undo
+
+    Walks the event log backward and reverses the most recent change.
+    """
     d = get_data_dir()
     ctx = active_context(d)
     events = load_events(ctx)
@@ -238,7 +270,44 @@ def _ctx_delete(d: Path, name: str | None) -> str:
     return f"Deleted context '{name}'."
 
 
+def help_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Show help.
+
+    Usage: task help [command]
+
+    Bare form lists all commands. With a command name, shows its full description.
+    """
+    import task.commands as _mod
+
+    target = modify_args.description.strip() if modify_args.description else None
+
+    if target:
+        fn = getattr(_mod, f"{target}_", None)
+        if fn is None or not callable(fn):
+            return [], f"Unknown command: {target!r}"
+        return [], (fn.__doc__ or "(no description)").strip()
+
+    names = sorted(
+        name[:-1]
+        for name in dir(_mod)
+        if name.endswith("_") and not name.startswith("_") and callable(getattr(_mod, name))
+    )
+    lines = []
+    for name in names:
+        fn = getattr(_mod, f"{name}_")
+        doc = (fn.__doc__ or "").strip()
+        first_line = doc.splitlines()[0] if doc else "(no description)"
+        lines.append(f"  {name:<12}{first_line}")
+    return [], "\n".join(lines)
+
+
 def context_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Manage contexts.
+
+    Usage: task context [list|use <name>|create <name>|delete <name>]
+
+    Bare form shows the active context.
+    """
     d = get_data_dir()
     parts = modify_args.description.split() if modify_args.description else []
     subcmd = parts[0] if parts else None
@@ -260,6 +329,12 @@ def context_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tupl
 
 
 def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Initialize the task store.
+
+    Usage: task init
+
+    Creates the data directory and default context.
+    """
     d = get_data_dir()
     state_file = d / "state.json"
     if state_file.exists():

@@ -48,7 +48,13 @@ def main() -> None:
         _, message = fn(parsed_filter, parsed_modification)
         print(message)
         return
-    
+
+    if command == "help":
+        _, message = fn(parsed_filter, parsed_modification)
+        if message:
+            print(message)
+        return
+
     d = storage.data_dir()
     state_file = d / "state.json"
     if not state_file.exists():
