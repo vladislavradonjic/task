@@ -1,6 +1,6 @@
 from uuid import UUID, uuid4
 from datetime import datetime
-from typing import Annotated, Literal, Union
+from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, Field
 
 
@@ -51,7 +51,19 @@ class DeletedEvent(BaseModel):
     task_id: UUID
 
 
+class FieldChange(BaseModel):
+    before: Any
+    after: Any
+
+
+class UpdatedEvent(BaseModel):
+    type: Literal["updated"] = "updated"
+    ts: datetime = Field(default_factory=datetime.now)
+    task_id: UUID
+    changes: dict[str, FieldChange]
+
+
 Event = Annotated[
-    Union[CreatedEvent, DoneEvent, DeletedEvent],
+    Union[CreatedEvent, DoneEvent, DeletedEvent, UpdatedEvent],
     Field(discriminator="type"),
 ]

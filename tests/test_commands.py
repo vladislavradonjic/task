@@ -1,7 +1,7 @@
 import json
 
-from task.commands import add_, delete_, done_, init_, list_
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, ParsedFilter, ParsedModification, Task
+from task.commands import add_, delete_, done_, init_, list_, modify_
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, ParsedFilter, ParsedModification, Task, UpdatedEvent
 from task.storage import assign_display_ids
 
 
@@ -239,6 +239,110 @@ def test_delete_waiting_task_allowed():
     events, _ = delete_(tasks, ParsedFilter(ids=[1]), ParsedModification())
     assert len(events) == 1
     assert isinstance(events[0], DeletedEvent)
+
+
+# ---------------------------------------------------------------------------
+# modify_
+# ---------------------------------------------------------------------------
+
+def test_modify_empty_filter_is_noop():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = modify_(tasks, ParsedFilter(), ParsedModification(description="new desc"))
+    assert events == []
+    assert "No filter" in message
+
+
+def test_modify_no_matching_id():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = modify_(tasks, ParsedFilter(ids=[99]), ParsedModification(description="new desc"))
+    assert events == []
+    assert "No matching" in message
+
+
+def test_modify_nothing_to_change():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    assert events == []
+    assert "Nothing to change" in message
+
+
+def test_modify_description():
+    from task.events import apply_event
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(description="buy oat milk"))
+    assert len(events) == 1
+    assert isinstance(events[0], UpdatedEvent)
+    assert "description" in events[0].changes
+    result = apply_event(tasks, events[0])
+    assert result[0].description == "buy oat milk"
+    assert "buy milk" in message or "buy oat milk" in message
+
+
+def test_modify_add_tag():
+    from task.events import apply_event
+    tasks = [Task(description="task", tags=["existing"])]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(tags=["+urgent"]))
+    result = apply_event(tasks, events[0])
+    assert "urgent" in result[0].tags
+    assert "existing" in result[0].tags
+
+
+def test_modify_remove_tag():
+    from task.events import apply_event
+    tasks = [Task(description="task", tags=["bug", "urgent"])]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(tags=["-bug"]))
+    result = apply_event(tasks, events[0])
+    assert "bug" not in result[0].tags
+    assert "urgent" in result[0].tags
+
+
+def test_modify_add_tag_idempotent():
+    tasks = [Task(description="task", tags=["bug"])]
+    assign_display_ids(tasks)
+    events, message = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(tags=["+bug"]))
+    assert events == []
+    assert "Nothing to change" in message
+
+
+def test_modify_set_property():
+    from task.events import apply_event
+    tasks = [Task(description="task")]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(properties={"project": "work"}))
+    result = apply_event(tasks, events[0])
+    assert result[0].properties["project"] == "work"
+
+
+def test_modify_clear_property():
+    from task.events import apply_event
+    tasks = [Task(description="task", properties={"project": "work"})]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(properties={"project": None}))
+    result = apply_event(tasks, events[0])
+    assert "project" not in result[0].properties
+
+
+def test_modify_records_before_after():
+    tasks = [Task(description="old desc")]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(description="new desc"))
+    change = events[0].changes["description"]
+    assert change.before == "old desc"
+    assert change.after == "new desc"
+
+
+def test_modify_multiple_tasks():
+    tasks = [Task(description=f"task {i}") for i in range(3)]
+    assign_display_ids(tasks)
+    events, message = modify_(tasks, ParsedFilter(ids=[1, 2]), ParsedModification(properties={"project": "work"}))
+    assert len(events) == 2
+    assert "2 tasks" in message
 
 
 # ---------------------------------------------------------------------------

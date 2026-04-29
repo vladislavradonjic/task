@@ -1,4 +1,4 @@
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, Event, Task
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, Event, Task, UpdatedEvent
 
 
 def apply_event(tasks: list[Task], event: Event) -> list[Task]:
@@ -14,6 +14,12 @@ def apply_event(tasks: list[Task], event: Event) -> list[Task]:
         case DeletedEvent():
             return [
                 t.model_copy(update={"status": "deleted"})
+                if t.uuid == event.task_id else t
+                for t in tasks
+            ]
+        case UpdatedEvent():
+            return [
+                t.model_copy(update={f: c.after for f, c in event.changes.items()})
                 if t.uuid == event.task_id else t
                 for t in tasks
             ]

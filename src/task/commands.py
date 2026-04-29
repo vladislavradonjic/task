@@ -3,7 +3,7 @@
 import json
 from rich.console import Console
 from rich.table import Table
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, ParsedFilter, ParsedModification, Event, Task
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent
 from task.storage import data_dir as get_data_dir
 
 
@@ -77,6 +77,54 @@ def delete_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
         return [], "No matching tasks."
     events = [DeletedEvent(task_id=t.uuid) for t in matched]
     return events, f"Deleted {_fmt(matched)}."
+
+
+def _compute_changes(task: Task, modify_args: ParsedModification) -> dict[str, FieldChange]:
+    changes: dict[str, FieldChange] = {}
+
+    if modify_args.description and modify_args.description != task.description:
+        changes["description"] = FieldChange(before=task.description, after=modify_args.description)
+
+    if modify_args.tags:
+        new_tags = list(task.tags)
+        for tag in modify_args.tags:
+            if tag.startswith("+"):
+                name = tag[1:]
+                if name not in new_tags:
+                    new_tags.append(name)
+            else:
+                name = tag[1:]
+                new_tags = [t for t in new_tags if t != name]
+        if new_tags != task.tags:
+            changes["tags"] = FieldChange(before=list(task.tags), after=new_tags)
+
+    if modify_args.properties:
+        new_props = dict(task.properties)
+        for k, v in modify_args.properties.items():
+            if v is None:
+                new_props.pop(k, None)
+            else:
+                new_props[k] = v
+        if new_props != task.properties:
+            changes["properties"] = FieldChange(before=dict(task.properties), after=new_props)
+
+    return changes
+
+
+def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    if not filter_args.ids:
+        return [], "No filter given; nothing modified."
+    matched = [t for t in tasks if t.id in set(filter_args.ids)]
+    if not matched:
+        return [], "No matching tasks."
+    events = []
+    for task in matched:
+        changes = _compute_changes(task, modify_args)
+        if changes:
+            events.append(UpdatedEvent(task_id=task.uuid, changes=changes))
+    if not events:
+        return [], "Nothing to change."
+    return events, f"Modified {_fmt(matched)}."
 
 
 def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
