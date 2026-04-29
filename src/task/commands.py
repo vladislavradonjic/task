@@ -14,8 +14,8 @@ def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModifi
         tags=tags,
         properties={k: v for k, v in modify_args.properties.items() if v is not None},
     )
-    event = CreatedEvent(task_id=task.id, snapshot=task)
-    return [event], f"Created task {task.id}"
+    event = CreatedEvent(task_id=task.uuid, snapshot=task)
+    return [event], f"Created task {task.uuid}"
 
 
 def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
@@ -37,8 +37,8 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
     if show_project:
         table.add_column("Project")
 
-    for i, task in enumerate(visible, 1):
-        row = [str(i), task.description]
+    for task in visible:
+        row = [str(task.id), task.description]
         if show_tags:
             row.append(" ".join(f"+{t}" for t in task.tags))
         if show_project:

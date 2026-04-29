@@ -1,4 +1,5 @@
 import sys
+import json
 
 from task import commands, storage
 from task.events import apply_event
@@ -46,14 +47,40 @@ def main() -> None:
         _, message = fn(parsed_filter, parsed_modification)
         print(message)
         return
-
+    
     d = storage.data_dir()
-    if not (d / "state.json").exists():
+    state_file = d / "state.json"
+    if not state_file.exists():
         print("Not initialized. Run `task init` first.", file=sys.stderr)
         sys.exit(2)
 
+    state = json.loads(state_file.read_text())
+    if state.get("version") != storage.CURRENT_STATE_VERSION:
+        print(
+          f"state.json version {state.get('version')} not supported "
+          f"(expected {storage.CURRENT_STATE_VERSION}); run `task migrate` or update the binary.",
+          file=sys.stderr,
+        )
+        sys.exit(1)
+
     context = storage.active_context(d)
+    meta_file = context / "meta.json"
+    if not meta_file.exists():
+        print(f"Context {context.name} not initialized. Run `task context list`.", file=sys.stderr)
+        sys.exit(1)
+
+    meta = json.loads(meta_file.read_text())
+    if meta.get("version") != storage.CURRENT_CONTEXT_VERSION:
+        print(
+          f"Context meta.json version {meta.get('version')} not supported "
+          f"(expected {storage.CURRENT_CONTEXT_VERSION}); run `task migrate` or update the binary.",
+          file=sys.stderr,
+        )
+        sys.exit(1)
+
     tasks = storage.load_tasks(context)
+    storage.assign_display_ids(tasks)
+
     events, message = fn(tasks, parsed_filter, parsed_modification)
     for event in events:
         storage.append_event(context, event)

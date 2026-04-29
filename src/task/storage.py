@@ -1,6 +1,13 @@
 import json, os
 from pathlib import Path
+from pydantic import TypeAdapter
 from task.models import Event, Task
+from task.events import apply_event
+
+CURRENT_STATE_VERSION = 1
+CURRENT_CONTEXT_VERSION = 1
+
+_event_adapter = TypeAdapter(Event)
 
 
 def data_dir() -> Path:
@@ -12,6 +19,10 @@ def data_dir() -> Path:
 
 
 def active_context(data_dir: Path) -> Path:
+    override = os.environ.get("TASK_CONTEXT")
+    if override:
+        return data_dir / override
+    
     state = data_dir / "state.json"
     if state.exists():
         active = json.loads(state.read_text())["active"]
@@ -20,10 +31,23 @@ def active_context(data_dir: Path) -> Path:
     return data_dir / active
 
 
+def rebuild_tasks(context: Path) -> list[Task]:
+    tasks: list[Task] = []
+    events_file = context / "events.jsonl"
+    if events_file.exists():
+        for line in events_file.read_text().splitlines():
+            if line.strip():
+                tasks = apply_event(tasks, _event_adapter.validate_json(line))
+    return tasks
+
+
 def load_tasks(context: Path) -> list[Task]:
     cache = context / "tasks.json"
     if not cache.exists():
-        return []
+        tasks = rebuild_tasks(context)
+        if tasks:
+            save_snapshot(context, tasks)
+        return tasks
     return [Task.model_validate(task) for task in json.loads(cache.read_text())]
 
 
@@ -37,3 +61,14 @@ def save_snapshot(context: Path, tasks: list[Task]) -> None:
     (context / "tasks.json").write_text(
         json.dumps([task.model_dump(mode="json") for task in tasks], indent=2)
     )
+
+
+def assign_display_ids(tasks: list[Task]) -> None:
+    active = sorted(
+        (task for task in tasks if task.status in {"pending", "waiting"}),
+        key=lambda t: t.entry,
+    )
+
+    for i, task in enumerate(active, 1):
+        task.id = i
+

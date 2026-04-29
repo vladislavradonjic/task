@@ -2,6 +2,7 @@ import json
 
 from task.commands import add_, init_, list_
 from task.models import CreatedEvent, ParsedFilter, ParsedModification, Task
+from task.storage import assign_display_ids
 
 
 # ---------------------------------------------------------------------------
@@ -18,7 +19,7 @@ def test_add_returns_created_event():
 
 def test_add_task_id_matches_snapshot():
     events, _ = add_([], ParsedFilter(), ParsedModification(description="test"))
-    assert events[0].task_id == events[0].snapshot.id
+    assert events[0].task_id == events[0].snapshot.uuid
 
 
 def test_add_applies_positive_tags():
@@ -53,6 +54,7 @@ def test_list_no_tasks(capsys):
 
 def test_list_shows_pending(capsys):
     tasks = [Task(description="buy milk"), Task(description="fix parser")]
+    assign_display_ids(tasks)
     _, message = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
     assert "buy milk" in captured.out
@@ -62,7 +64,9 @@ def test_list_shows_pending(capsys):
 def test_list_hides_waiting_when_10_or_more_pending(capsys):
     pending = [Task(description=f"task {i}") for i in range(10)]
     waiting = [Task(description="waiting task", status="waiting")]
-    _, _ = list_(pending + waiting, ParsedFilter(), ParsedModification())
+    tasks = pending + waiting
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
     assert "waiting task" not in captured.out
 
@@ -70,13 +74,16 @@ def test_list_hides_waiting_when_10_or_more_pending(capsys):
 def test_list_shows_waiting_when_fewer_than_10_pending(capsys):
     pending = [Task(description=f"task {i}") for i in range(3)]
     waiting = [Task(description="waiting task", status="waiting")]
-    _, _ = list_(pending + waiting, ParsedFilter(), ParsedModification())
+    tasks = pending + waiting
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
     assert "waiting task" in captured.out
 
 
 def test_list_shows_tags_column_only_when_present(capsys):
     tasks = [Task(description="tagged", tags=["bug"]), Task(description="plain")]
+    assign_display_ids(tasks)
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
     assert "Tags" in captured.out
@@ -85,6 +92,7 @@ def test_list_shows_tags_column_only_when_present(capsys):
 
 def test_list_omits_tags_column_when_absent(capsys):
     tasks = [Task(description="plain")]
+    assign_display_ids(tasks)
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
     assert "Tags" not in captured.out
@@ -92,10 +100,23 @@ def test_list_omits_tags_column_when_absent(capsys):
 
 def test_list_shows_project_column_only_when_present(capsys):
     tasks = [Task(description="work task", properties={"project": "work"})]
+    assign_display_ids(tasks)
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
     assert "Project" in captured.out
     assert "work" in captured.out
+
+
+def test_list_ids_from_full_active_set(capsys):
+    # waiting gets a display ID even when not shown (≥10 pending suppresses it)
+    pending = [Task(description=f"task {i}") for i in range(10)]
+    waiting = [Task(description="wait task", status="waiting")]
+    tasks = pending + waiting
+    assign_display_ids(tasks)
+    assert waiting[0].id is not None
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert "wait task" not in captured.out
 
 
 # ---------------------------------------------------------------------------
