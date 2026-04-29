@@ -1,6 +1,6 @@
 from uuid import UUID, uuid4
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Union
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +27,7 @@ class Task(BaseModel):
     tags: list[str] = []
     properties: dict[str, str] = {}
     entry: datetime = Field(default_factory=datetime.now)
+    end: datetime | None = None
     start: datetime | None = None
     
 
@@ -38,4 +39,19 @@ class CreatedEvent(BaseModel):
     snapshot: Task
 
 
-Event = Annotated[CreatedEvent, Field(discriminator="type")]
+class DoneEvent(BaseModel):
+    type: Literal["done"] = "done"
+    ts: datetime = Field(default_factory=datetime.now)
+    task_id: UUID
+
+
+class DeletedEvent(BaseModel):
+    type: Literal["deleted"] = "deleted"
+    ts: datetime = Field(default_factory=datetime.now)
+    task_id: UUID
+
+
+Event = Annotated[
+    Union[CreatedEvent, DoneEvent, DeletedEvent],
+    Field(discriminator="type"),
+]

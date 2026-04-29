@@ -1,5 +1,5 @@
 from task.events import apply_event
-from task.models import CreatedEvent, Task
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, Task
 
 
 def test_apply_created_to_empty():
@@ -13,3 +13,31 @@ def test_apply_created_appends():
     new = Task(description="new")
     result = apply_event([existing], CreatedEvent(task_id=new.uuid, snapshot=new))
     assert result == [existing, new]
+
+
+def test_apply_done_sets_status_and_end():
+    task = Task(description="buy milk")
+    event = DoneEvent(task_id=task.uuid)
+    result = apply_event([task], event)
+    assert result[0].status == "done"
+    assert result[0].end == event.ts
+
+
+def test_apply_done_leaves_other_tasks_unchanged():
+    t1 = Task(description="first")
+    t2 = Task(description="second")
+    result = apply_event([t1, t2], DoneEvent(task_id=t1.uuid))
+    assert result[1].status == "pending"
+
+
+def test_apply_deleted_sets_status():
+    task = Task(description="buy milk")
+    result = apply_event([task], DeletedEvent(task_id=task.uuid))
+    assert result[0].status == "deleted"
+
+
+def test_apply_deleted_leaves_other_tasks_unchanged():
+    t1 = Task(description="first")
+    t2 = Task(description="second")
+    result = apply_event([t1, t2], DeletedEvent(task_id=t1.uuid))
+    assert result[1].status == "pending"

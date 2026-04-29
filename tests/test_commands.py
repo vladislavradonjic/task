@@ -1,7 +1,7 @@
 import json
 
-from task.commands import add_, init_, list_
-from task.models import CreatedEvent, ParsedFilter, ParsedModification, Task
+from task.commands import add_, delete_, done_, init_, list_
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, ParsedFilter, ParsedModification, Task
 from task.storage import assign_display_ids
 
 
@@ -117,6 +117,128 @@ def test_list_ids_from_full_active_set(capsys):
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
     assert "wait task" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# done_
+# ---------------------------------------------------------------------------
+
+def test_done_empty_filter_is_noop():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = done_(tasks, ParsedFilter(), ParsedModification())
+    assert events == []
+    assert "No filter" in message
+
+
+def test_done_no_matching_id():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = done_(tasks, ParsedFilter(ids=[99]), ParsedModification())
+    assert events == []
+    assert "No matching" in message
+
+
+def test_done_returns_done_event():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = done_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    assert len(events) == 1
+    assert isinstance(events[0], DoneEvent)
+    assert events[0].task_id == tasks[0].uuid
+    assert "buy milk" in message
+
+
+def test_done_sets_end_timestamp():
+    from task.events import apply_event
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, _ = done_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    result = apply_event(tasks, events[0])
+    assert result[0].status == "done"
+    assert result[0].end is not None
+
+
+def test_done_refuses_waiting_task():
+    tasks = [Task(description="waiting task", status="waiting")]
+    assign_display_ids(tasks)
+    events, message = done_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    assert events == []
+    assert "waiting" in message.lower()
+
+
+def test_done_refuses_entire_batch_if_any_waiting():
+    tasks = [
+        Task(description="pending task"),
+        Task(description="waiting task", status="waiting"),
+    ]
+    assign_display_ids(tasks)
+    events, message = done_(tasks, ParsedFilter(ids=[1, 2]), ParsedModification())
+    assert events == []
+    assert "waiting" in message.lower()
+
+
+def test_done_multiple_tasks():
+    tasks = [Task(description=f"task {i}") for i in range(3)]
+    assign_display_ids(tasks)
+    events, message = done_(tasks, ParsedFilter(ids=[1, 3]), ParsedModification())
+    assert len(events) == 2
+    assert "2 tasks" in message
+
+
+# ---------------------------------------------------------------------------
+# delete_
+# ---------------------------------------------------------------------------
+
+def test_delete_empty_filter_is_noop():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = delete_(tasks, ParsedFilter(), ParsedModification())
+    assert events == []
+    assert "No filter" in message
+
+
+def test_delete_no_matching_id():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = delete_(tasks, ParsedFilter(ids=[99]), ParsedModification())
+    assert events == []
+    assert "No matching" in message
+
+
+def test_delete_returns_deleted_event():
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, message = delete_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    assert len(events) == 1
+    assert isinstance(events[0], DeletedEvent)
+    assert events[0].task_id == tasks[0].uuid
+    assert "buy milk" in message
+
+
+def test_delete_sets_status_deleted():
+    from task.events import apply_event
+    tasks = [Task(description="buy milk")]
+    assign_display_ids(tasks)
+    events, _ = delete_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    result = apply_event(tasks, events[0])
+    assert result[0].status == "deleted"
+
+
+def test_delete_multiple_tasks():
+    tasks = [Task(description=f"task {i}") for i in range(3)]
+    assign_display_ids(tasks)
+    events, message = delete_(tasks, ParsedFilter(ids=[1, 2]), ParsedModification())
+    assert len(events) == 2
+    assert "2 tasks" in message
+
+
+def test_delete_waiting_task_allowed():
+    tasks = [Task(description="waiting task", status="waiting")]
+    assign_display_ids(tasks)
+    events, _ = delete_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    assert len(events) == 1
+    assert isinstance(events[0], DeletedEvent)
 
 
 # ---------------------------------------------------------------------------
