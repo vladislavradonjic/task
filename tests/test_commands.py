@@ -1,6 +1,6 @@
 import json
 
-from task.commands import add_, context_, delete_, done_, init_, list_, modify_, undo_
+from task.commands import add_, context_, delete_, done_, help_, init_, list_, modify_, undo_
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, ParsedFilter, ParsedModification, Task, UpdatedEvent
 from task.storage import assign_display_ids
 
@@ -539,6 +539,27 @@ def test_init_already_initialized(tmp_data_dir):
     init_(ParsedFilter(), ParsedModification())
     _, message = init_(ParsedFilter(), ParsedModification())
     assert "Already initialized" in message
+
+
+# ---------------------------------------------------------------------------
+# help_
+# ---------------------------------------------------------------------------
+
+def test_help_bare_lists_all_commands():
+    _, message = help_(ParsedFilter(), ParsedModification())
+    for name in ["add", "context", "delete", "done", "help", "init", "list", "modify", "undo"]:
+        assert name in message
+
+
+def test_help_command_returns_docstring():
+    _, message = help_(ParsedFilter(), ParsedModification(description="add"))
+    assert "Usage:" in message
+
+
+def test_help_unknown_command_returns_error():
+    _, message = help_(ParsedFilter(), ParsedModification(description="frobnicate"))
+    assert "Unknown command" in message
+    assert "frobnicate" in message
 
 
 # ---------------------------------------------------------------------------
