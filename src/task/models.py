@@ -64,7 +64,15 @@ class UpdatedEvent(BaseModel):
     changes: dict[str, FieldChange]
 
 
+class UndoneEvent(BaseModel):
+    type: Literal["undone"] = "undone"
+    ts: datetime = Field(default_factory=datetime.now)
+    task_id: UUID
+    undid_ts: datetime
+    undid_type: str
+
+
 Event = Annotated[
-    Union[CreatedEvent, DoneEvent, DeletedEvent, UpdatedEvent],
+    Union[CreatedEvent, DoneEvent, DeletedEvent, UpdatedEvent, UndoneEvent],
     Field(discriminator="type"),
 ]

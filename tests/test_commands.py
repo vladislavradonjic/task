@@ -1,6 +1,6 @@
 import json
 
-from task.commands import add_, context_, delete_, done_, init_, list_, modify_
+from task.commands import add_, context_, delete_, done_, init_, list_, modify_, undo_
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, ParsedFilter, ParsedModification, Task, UpdatedEvent
 from task.storage import assign_display_ids
 
@@ -539,3 +539,100 @@ def test_init_already_initialized(tmp_data_dir):
     init_(ParsedFilter(), ParsedModification())
     _, message = init_(ParsedFilter(), ParsedModification())
     assert "Already initialized" in message
+
+
+# ---------------------------------------------------------------------------
+# undo_
+# ---------------------------------------------------------------------------
+
+def _setup(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    return tmp_data_dir / "default"
+
+
+def test_undo_nothing_to_undo(tmp_data_dir):
+    _setup(tmp_data_dir)
+    _, message = undo_(ParsedFilter(), ParsedModification())
+    assert message == "Nothing to undo."
+
+
+def test_undo_created_removes_task(tmp_data_dir):
+    from task.storage import append_event, rebuild_tasks, assign_display_ids, save_snapshot
+    ctx = _setup(tmp_data_dir)
+
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="buy milk"))
+    for e in events:
+        append_event(ctx, e)
+    tasks = rebuild_tasks(ctx)
+    assign_display_ids(tasks)
+    save_snapshot(ctx, tasks)
+
+    _, message = undo_(ParsedFilter(), ParsedModification())
+    assert "created" in message
+    assert "buy milk" in message
+    assert rebuild_tasks(ctx) == []
+
+
+def test_undo_done_reverts_to_pending(tmp_data_dir):
+    from task.storage import append_event, rebuild_tasks, assign_display_ids, save_snapshot
+    ctx = _setup(tmp_data_dir)
+
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="fix parser"))
+    for e in events:
+        append_event(ctx, e)
+    tasks = rebuild_tasks(ctx)
+    assign_display_ids(tasks)
+    save_snapshot(ctx, tasks)
+
+    events, _ = done_(tasks, ParsedFilter(ids=[1]), ParsedModification())
+    for e in events:
+        append_event(ctx, e)
+    tasks = rebuild_tasks(ctx)
+    save_snapshot(ctx, tasks)
+
+    _, message = undo_(ParsedFilter(), ParsedModification())
+    assert "done" in message
+    assert "fix parser" in message
+    remaining = rebuild_tasks(ctx)
+    assert len(remaining) == 1
+    assert remaining[0].status == "pending"
+    assert remaining[0].end is None
+
+
+def test_undo_twice_walks_back(tmp_data_dir):
+    from task.storage import append_event, rebuild_tasks, assign_display_ids, save_snapshot
+    ctx = _setup(tmp_data_dir)
+
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="task a"))
+    for e in events:
+        append_event(ctx, e)
+    tasks = rebuild_tasks(ctx)
+    assign_display_ids(tasks)
+    save_snapshot(ctx, tasks)
+
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="task b"))
+    for e in events:
+        append_event(ctx, e)
+    tasks = rebuild_tasks(ctx)
+    assign_display_ids(tasks)
+    save_snapshot(ctx, tasks)
+
+    undo_(ParsedFilter(), ParsedModification())
+    undo_(ParsedFilter(), ParsedModification())
+    assert rebuild_tasks(ctx) == []
+
+
+def test_undo_repeated_beyond_log_is_safe(tmp_data_dir):
+    from task.storage import append_event, rebuild_tasks, assign_display_ids, save_snapshot
+    ctx = _setup(tmp_data_dir)
+
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="only task"))
+    for e in events:
+        append_event(ctx, e)
+    tasks = rebuild_tasks(ctx)
+    assign_display_ids(tasks)
+    save_snapshot(ctx, tasks)
+
+    undo_(ParsedFilter(), ParsedModification())
+    _, message = undo_(ParsedFilter(), ParsedModification())
+    assert message == "Nothing to undo."

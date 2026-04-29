@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent
-from task.storage import data_dir as get_data_dir
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
+from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, load_events, rebuild_tasks, save_snapshot
 
 
 def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
@@ -150,6 +150,36 @@ def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
     if not events:
         return [], "Nothing to change."
     return events, f"Modified {_fmt(matched)}."
+
+
+def undo_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    d = get_data_dir()
+    ctx = active_context(d)
+    events = load_events(ctx)
+
+    undone_ts = {e.undid_ts for e in events if isinstance(e, UndoneEvent)}
+
+    target = None
+    for event in reversed(events):
+        if isinstance(event, UndoneEvent) or event.ts in undone_ts:
+            continue
+        target = event
+        break
+
+    if target is None:
+        return [], "Nothing to undo."
+
+    desc = next(
+        (e.snapshot.description for e in events if isinstance(e, CreatedEvent) and e.task_id == target.task_id),
+        str(target.task_id),
+    )
+
+    append_event(ctx, UndoneEvent(task_id=target.task_id, undid_ts=target.ts, undid_type=target.type))
+    tasks = rebuild_tasks(ctx)
+    assign_display_ids(tasks)
+    save_snapshot(ctx, tasks)
+
+    return [], f'Undid {target.type} on "{desc}".'
 
 
 def _ctx_show(d: Path) -> str:

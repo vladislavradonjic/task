@@ -86,6 +86,12 @@ def main() -> None:
         )
         sys.exit(1)
 
+    if command == "undo":
+        _, message = fn(parsed_filter, parsed_modification)
+        if message:
+            print(message)
+        return
+
     tasks = storage.load_tasks(context)
 
     transitions = storage.lazy_wait_transitions(tasks)

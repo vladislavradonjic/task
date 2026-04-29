@@ -124,6 +124,52 @@ def test_lazy_wait_transitions_accepts_now_override():
     assert events[0].task_id == task_expired.uuid
 
 
+def test_rebuild_tasks_skips_undone_event(tmp_data_dir):
+    context = tmp_data_dir / "default"
+    context.mkdir()
+    task = Task(description="buy milk")
+    created = CreatedEvent(task_id=task.uuid, snapshot=task)
+    storage.append_event(context, created)
+    from task.models import UndoneEvent
+    undo = UndoneEvent(task_id=task.uuid, undid_ts=created.ts, undid_type="created")
+    storage.append_event(context, undo)
+    tasks = storage.rebuild_tasks(context)
+    assert tasks == []
+
+
+def test_rebuild_tasks_second_undo_skips_earlier_event(tmp_data_dir):
+    from task.models import DoneEvent, UndoneEvent
+    context = tmp_data_dir / "default"
+    context.mkdir()
+    task = Task(description="buy milk")
+    created = CreatedEvent(task_id=task.uuid, snapshot=task)
+    done = DoneEvent(task_id=task.uuid)
+    storage.append_event(context, created)
+    storage.append_event(context, done)
+    undo_done = UndoneEvent(task_id=task.uuid, undid_ts=done.ts, undid_type="done")
+    storage.append_event(context, undo_done)
+    undo_created = UndoneEvent(task_id=task.uuid, undid_ts=created.ts, undid_type="created")
+    storage.append_event(context, undo_created)
+    tasks = storage.rebuild_tasks(context)
+    assert tasks == []
+
+
+def test_rebuild_tasks_partial_undo_leaves_earlier_events(tmp_data_dir):
+    from task.models import DoneEvent, UndoneEvent
+    context = tmp_data_dir / "default"
+    context.mkdir()
+    task = Task(description="buy milk")
+    created = CreatedEvent(task_id=task.uuid, snapshot=task)
+    done = DoneEvent(task_id=task.uuid)
+    storage.append_event(context, created)
+    storage.append_event(context, done)
+    undo_done = UndoneEvent(task_id=task.uuid, undid_ts=done.ts, undid_type="done")
+    storage.append_event(context, undo_done)
+    tasks = storage.rebuild_tasks(context)
+    assert len(tasks) == 1
+    assert tasks[0].status == "pending"
+
+
 def test_assign_display_ids_includes_waiting():
     now = datetime.now()
     t_pending = Task(description="pending", entry=now - timedelta(minutes=1))

@@ -2,7 +2,7 @@ import json, os
 from datetime import datetime
 from pathlib import Path
 from pydantic import TypeAdapter
-from task.models import Event, FieldChange, Task, UpdatedEvent
+from task.models import Event, FieldChange, Task, UpdatedEvent, UndoneEvent
 from task.events import apply_event
 
 CURRENT_STATE_VERSION = 1
@@ -32,13 +32,25 @@ def active_context(data_dir: Path) -> Path:
     return data_dir / active
 
 
-def rebuild_tasks(context: Path) -> list[Task]:
-    tasks: list[Task] = []
+def load_events(context: Path) -> list[Event]:
     events_file = context / "events.jsonl"
-    if events_file.exists():
-        for line in events_file.read_text().splitlines():
-            if line.strip():
-                tasks = apply_event(tasks, _event_adapter.validate_json(line))
+    if not events_file.exists():
+        return []
+    return [
+        _event_adapter.validate_json(line)
+        for line in events_file.read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def rebuild_tasks(context: Path) -> list[Task]:
+    events = load_events(context)
+    undone_ts = {e.undid_ts for e in events if isinstance(e, UndoneEvent)}
+    tasks: list[Task] = []
+    for event in events:
+        if isinstance(event, UndoneEvent) or event.ts in undone_ts:
+            continue
+        tasks = apply_event(tasks, event)
     return tasks
 
 
