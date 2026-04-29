@@ -119,6 +119,86 @@ def test_list_ids_from_full_active_set(capsys):
     assert "wait task" not in captured.out
 
 
+def test_list_status_filter_waiting_overrides_threshold(capsys):
+    pending = [Task(description=f"task {i}") for i in range(10)]
+    waiting = [Task(description="wait task", status="waiting")]
+    tasks = pending + waiting
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(properties={"status": "waiting"}), ParsedModification())
+    captured = capsys.readouterr()
+    assert "wait task" in captured.out
+    assert "task 0" not in captured.out
+
+
+def test_list_status_filter_pending_shows_only_pending(capsys):
+    pending = [Task(description="pending task")]
+    waiting = [Task(description="wait task", status="waiting")]
+    tasks = pending + waiting
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(properties={"status": "pending"}), ParsedModification())
+    captured = capsys.readouterr()
+    assert "pending task" in captured.out
+    assert "wait task" not in captured.out
+
+
+def test_list_flag_today(capsys):
+    tasks = [Task(description="today task", tags=["today"])]
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert "1d " in captured.out
+
+
+def test_list_flag_week(capsys):
+    tasks = [Task(description="week task", tags=["week"])]
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert "1w " in captured.out
+
+
+def test_list_flag_both_today_and_week(capsys):
+    tasks = [Task(description="both", tags=["today", "week"])]
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert "1* " in captured.out
+
+
+def test_list_flag_active(capsys):
+    from datetime import datetime
+    tasks = [Task(description="active", start=datetime.now())]
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert "1 >" in captured.out
+
+
+def test_list_flag_omitted_when_no_task_has_flag(capsys):
+    tasks = [Task(description="plain a"), Task(description="plain b")]
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    # IDs should be bare numbers with no flag chars
+    assert "1 " in captured.out or "1\n" in captured.out or "1│" in captured.out
+    assert "d" not in captured.out
+    assert "w" not in captured.out
+    assert ">" not in captured.out
+
+
+def test_list_flag_unflagged_task_gets_spaces_when_others_have_flags(capsys):
+    from datetime import datetime
+    tasks = [
+        Task(description="active", start=datetime.now()),
+        Task(description="plain"),
+    ]
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    # unflagged task gets two-space suffix for alignment
+    assert "2  " in captured.out
+
+
 # ---------------------------------------------------------------------------
 # done_
 # ---------------------------------------------------------------------------

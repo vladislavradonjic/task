@@ -19,26 +19,47 @@ def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModifi
 
 
 def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
-    pending = [t for t in tasks if t.status == "pending"]
-    waiting = [t for t in tasks if t.status == "waiting"]
-    visible = pending + (waiting if len(pending) < 10 else [])
+    status_filter = filter_args.properties.get("status")
+    if status_filter:
+        visible = [t for t in tasks if t.status == status_filter]
+    else:
+        pending = [t for t in tasks if t.status == "pending"]
+        waiting = [t for t in tasks if t.status == "waiting"]
+        visible = pending + (waiting if len(pending) < 10 else [])
 
     if not visible:
         return [], "No tasks."
 
     show_tags = any(t.tags for t in visible)
     show_project = any("project" in t.properties for t in visible)
+    has_flags = any(
+        "today" in t.tags or "week" in t.tags or t.start is not None
+        for t in visible
+    )
 
     table = Table(show_header=True)
-    table.add_column("ID", style="bold")
+    table.add_column("ID", style="bold", overflow="ellipsis")
     table.add_column("Description", overflow="fold")
     if show_tags:
-        table.add_column("Tags")
+        table.add_column("Tags", overflow="ellipsis")
     if show_project:
-        table.add_column("Project")
+        table.add_column("Project", overflow="ellipsis")
 
     for task in visible:
-        row = [str(task.id), task.description]
+        if has_flags:
+            if "today" in task.tags and "week" in task.tags:
+                list_flag = "*"
+            elif "today" in task.tags:
+                list_flag = "d"
+            elif "week" in task.tags:
+                list_flag = "w"
+            else:
+                list_flag = " "
+            active_flag = ">" if task.start is not None else " "
+            id_cell = f"{task.id}{list_flag}{active_flag}"
+        else:
+            id_cell = str(task.id)
+        row = [id_cell, task.description]
         if show_tags:
             row.append(" ".join(f"+{t}" for t in task.tags))
         if show_project:
