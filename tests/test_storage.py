@@ -79,6 +79,51 @@ def test_assign_display_ids_skips_done_and_deleted():
     assert t_deleted.id is None
 
 
+def test_lazy_wait_transitions_flips_expired_wait():
+    past = datetime.now() - timedelta(hours=1)
+    task = Task(description="deferred", status="waiting", wait=past)
+    events = storage.lazy_wait_transitions([task])
+    assert len(events) == 1
+    assert events[0].changes["status"].before == "waiting"
+    assert events[0].changes["status"].after == "pending"
+    assert events[0].changes["wait"].after is None
+
+
+def test_lazy_wait_transitions_no_event_for_future_wait():
+    future = datetime.now() + timedelta(hours=1)
+    task = Task(description="deferred", status="waiting", wait=future)
+    assert storage.lazy_wait_transitions([task]) == []
+
+
+def test_lazy_wait_transitions_no_event_when_wait_is_none():
+    task = Task(description="waiting", status="waiting")
+    assert storage.lazy_wait_transitions([task]) == []
+
+
+def test_lazy_wait_transitions_skips_pending():
+    task = Task(description="pending")
+    assert storage.lazy_wait_transitions([task]) == []
+
+
+def test_lazy_wait_transitions_apply_updates_task():
+    from task.events import apply_event
+    past = datetime.now() - timedelta(hours=1)
+    task = Task(description="deferred", status="waiting", wait=past)
+    transitions = storage.lazy_wait_transitions([task])
+    result = apply_event([task], transitions[0])
+    assert result[0].status == "pending"
+    assert result[0].wait is None
+
+
+def test_lazy_wait_transitions_accepts_now_override():
+    fixed_now = datetime(2026, 1, 1, 12, 0)
+    task_expired = Task(description="expired", status="waiting", wait=datetime(2026, 1, 1, 11, 0))
+    task_future = Task(description="future", status="waiting", wait=datetime(2026, 1, 1, 13, 0))
+    events = storage.lazy_wait_transitions([task_expired, task_future], now=fixed_now)
+    assert len(events) == 1
+    assert events[0].task_id == task_expired.uuid
+
+
 def test_assign_display_ids_includes_waiting():
     now = datetime.now()
     t_pending = Task(description="pending", entry=now - timedelta(minutes=1))

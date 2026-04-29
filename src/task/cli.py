@@ -79,6 +79,14 @@ def main() -> None:
         sys.exit(1)
 
     tasks = storage.load_tasks(context)
+
+    transitions = storage.lazy_wait_transitions(tasks)
+    for event in transitions:
+        storage.append_event(context, event)
+        tasks = apply_event(tasks, event)
+    if transitions:
+        storage.save_snapshot(context, tasks)
+
     storage.assign_display_ids(tasks)
 
     events, message = fn(tasks, parsed_filter, parsed_modification)

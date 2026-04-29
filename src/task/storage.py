@@ -1,7 +1,8 @@
 import json, os
+from datetime import datetime
 from pathlib import Path
 from pydantic import TypeAdapter
-from task.models import Event, Task
+from task.models import Event, FieldChange, Task, UpdatedEvent
 from task.events import apply_event
 
 CURRENT_STATE_VERSION = 1
@@ -61,6 +62,22 @@ def save_snapshot(context: Path, tasks: list[Task]) -> None:
     (context / "tasks.json").write_text(
         json.dumps([task.model_dump(mode="json") for task in tasks], indent=2)
     )
+
+
+def lazy_wait_transitions(tasks: list[Task], now: datetime | None = None) -> list[UpdatedEvent]:
+    if now is None:
+        now = datetime.now()
+    events = []
+    for task in tasks:
+        if task.status == "waiting" and task.wait is not None and task.wait <= now:
+            events.append(UpdatedEvent(
+                task_id=task.uuid,
+                changes={
+                    "status": FieldChange(before="waiting", after="pending"),
+                    "wait": FieldChange(before=task.wait, after=None),
+                },
+            ))
+    return events
 
 
 def assign_display_ids(tasks: list[Task]) -> None:
