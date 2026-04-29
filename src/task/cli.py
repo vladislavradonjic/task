@@ -2,6 +2,7 @@ import sys
 import json
 
 from task import commands, storage
+from task.config import load_config
 from task.events import apply_event
 from task.parse import parse_filter, parse_modification
 
@@ -62,6 +63,8 @@ def main() -> None:
           file=sys.stderr,
         )
         sys.exit(1)
+
+    cfg = load_config(d)  # noqa: F841 — available for commands when needed
 
     if command == "context":
         _, message = fn(parsed_filter, parsed_modification)
