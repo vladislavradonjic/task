@@ -63,6 +63,11 @@ def main() -> None:
         )
         sys.exit(1)
 
+    if command == "context":
+        _, message = fn(parsed_filter, parsed_modification)
+        print(message)
+        return
+
     context = storage.active_context(d)
     meta_file = context / "meta.json"
     if not meta_file.exists():

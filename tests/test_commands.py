@@ -1,6 +1,6 @@
 import json
 
-from task.commands import add_, delete_, done_, init_, list_, modify_
+from task.commands import add_, context_, delete_, done_, init_, list_, modify_
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, ParsedFilter, ParsedModification, Task, UpdatedEvent
 from task.storage import assign_display_ids
 
@@ -423,6 +423,103 @@ def test_modify_multiple_tasks():
     events, message = modify_(tasks, ParsedFilter(ids=[1, 2]), ParsedModification(properties={"project": "work"}))
     assert len(events) == 2
     assert "2 tasks" in message
+
+
+# ---------------------------------------------------------------------------
+# context_
+# ---------------------------------------------------------------------------
+
+def test_context_bare_shows_active(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification())
+    assert message == "default"
+
+
+def test_context_list_marks_active(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification(description="list"))
+    assert "* default" in message
+
+
+def test_context_list_shows_all_contexts(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    context_(ParsedFilter(), ParsedModification(description="create work"))
+    _, message = context_(ParsedFilter(), ParsedModification(description="list"))
+    assert "* default" in message
+    assert "  work" in message
+
+
+def test_context_create_makes_dir(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification(description="create work"))
+    assert "work" in message
+    assert (tmp_data_dir / "work" / "meta.json").exists()
+    assert (tmp_data_dir / "work" / "events.jsonl").exists()
+    assert (tmp_data_dir / "work" / "tasks.json").exists()
+    assert (tmp_data_dir / "work" / "recaps").is_dir()
+
+
+def test_context_create_invalid_name(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification(description="create 1bad"))
+    assert "Invalid" in message
+    assert not (tmp_data_dir / "1bad").exists()
+
+
+def test_context_create_duplicate(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    context_(ParsedFilter(), ParsedModification(description="create work"))
+    _, message = context_(ParsedFilter(), ParsedModification(description="create work"))
+    assert "already exists" in message
+
+
+def test_context_create_does_not_switch(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    context_(ParsedFilter(), ParsedModification(description="create work"))
+    _, message = context_(ParsedFilter(), ParsedModification())
+    assert message == "default"
+
+
+def test_context_use_switches_active(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    context_(ParsedFilter(), ParsedModification(description="create work"))
+    _, message = context_(ParsedFilter(), ParsedModification(description="use work"))
+    assert "work" in message
+    state = json.loads((tmp_data_dir / "state.json").read_text())
+    assert state["active"] == "work"
+
+
+def test_context_use_nonexistent(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification(description="use nonexistent"))
+    assert "does not exist" in message
+
+
+def test_context_delete_refuses_active(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification(description="delete default"))
+    assert "active" in message.lower()
+    assert (tmp_data_dir / "default").exists()
+
+
+def test_context_delete_refuses_non_tty(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    context_(ParsedFilter(), ParsedModification(description="create work"))
+    _, message = context_(ParsedFilter(), ParsedModification(description="delete work"))
+    assert "TTY" in message
+    assert (tmp_data_dir / "work").exists()
+
+
+def test_context_delete_nonexistent(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification(description="delete nonexistent"))
+    assert "does not exist" in message
+
+
+def test_context_unknown_subcommand(tmp_data_dir):
+    init_(ParsedFilter(), ParsedModification())
+    _, message = context_(ParsedFilter(), ParsedModification(description="frobnicate"))
+    assert "Unknown" in message
 
 
 # ---------------------------------------------------------------------------

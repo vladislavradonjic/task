@@ -1,6 +1,10 @@
 """Command implementations."""
 
 import json
+import re
+import shutil
+import sys
+from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent
@@ -146,6 +150,83 @@ def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
     if not events:
         return [], "Nothing to change."
     return events, f"Modified {_fmt(matched)}."
+
+
+def _ctx_show(d: Path) -> str:
+    return json.loads((d / "state.json").read_text())["active"]
+
+
+def _ctx_list(d: Path) -> str:
+    active = json.loads((d / "state.json").read_text())["active"]
+    contexts = sorted(p.name for p in d.iterdir() if p.is_dir() and (p / "meta.json").exists())
+    return "\n".join(f"{'*' if c == active else ' '} {c}" for c in contexts)
+
+
+def _ctx_use(d: Path, name: str | None) -> str:
+    if name is None:
+        return "Usage: task context use <name>"
+    if not (d / name / "meta.json").exists():
+        return f"Context '{name}' does not exist. Run `task context list`."
+    state_file = d / "state.json"
+    state = json.loads(state_file.read_text())
+    state["active"] = name
+    state_file.write_text(json.dumps(state, indent=2))
+    return f"Active context: {name}"
+
+
+def _ctx_create(d: Path, name: str | None) -> str:
+    if name is None:
+        return "Usage: task context create <name>"
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
+        return f"Invalid context name: {name!r}. Must start with a letter; letters, digits, underscores, hyphens only."
+    ctx = d / name
+    if ctx.exists():
+        return f"Context '{name}' already exists."
+    ctx.mkdir(parents=True)
+    (ctx / "meta.json").write_text(json.dumps({"version": 1}, indent=2))
+    (ctx / "events.jsonl").touch()
+    (ctx / "tasks.json").write_text("[]")
+    (ctx / "recaps").mkdir()
+    return f"Created context '{name}'."
+
+
+def _ctx_delete(d: Path, name: str | None) -> str:
+    if name is None:
+        return "Usage: task context delete <name>"
+    active = json.loads((d / "state.json").read_text())["active"]
+    if name == active:
+        return f"Cannot delete the active context '{name}'. Switch first with `task context use <other>`."
+    ctx = d / name
+    if not ctx.exists():
+        return f"Context '{name}' does not exist."
+    if not sys.stdin.isatty():
+        return "Cannot confirm deletion non-interactively; run in a TTY."
+    answer = input(f"Delete context '{name}' and all its tasks? [y/N] ")
+    if answer.strip().lower() != "y":
+        return "Deletion cancelled."
+    shutil.rmtree(ctx)
+    return f"Deleted context '{name}'."
+
+
+def context_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    d = get_data_dir()
+    parts = modify_args.description.split() if modify_args.description else []
+    subcmd = parts[0] if parts else None
+    name = parts[1] if len(parts) > 1 else None
+
+    match subcmd:
+        case None:
+            return [], _ctx_show(d)
+        case "list":
+            return [], _ctx_list(d)
+        case "use":
+            return [], _ctx_use(d, name)
+        case "create":
+            return [], _ctx_create(d, name)
+        case "delete":
+            return [], _ctx_delete(d, name)
+        case _:
+            return [], f"Unknown context subcommand: {subcmd!r}"
 
 
 def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
