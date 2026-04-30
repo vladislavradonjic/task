@@ -1,9 +1,11 @@
 """Command implementations."""
 
+import calendar as _calendar
 import json
 import re
 import shutil
 import sys
+from collections import defaultdict, deque
 from datetime import date as _date, datetime, timedelta as _timedelta
 from pathlib import Path
 from uuid import UUID
@@ -846,6 +848,134 @@ def week_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
     Bare: list tasks tagged +week. With IDs: add +week. 'clear': remove +week from all.
     """
     return _tag_list_cmd("week", tasks, filter_args, modify_args)
+
+
+def _in_period(dt: datetime | None, start: datetime, end: datetime) -> bool:
+    if dt is None:
+        return False
+    return start <= dt.replace(tzinfo=None) <= end
+
+
+def _compute_time_sessions(
+    events: list,
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[list[dict], dict, float]:
+    """Pair StartedEvent/StoppedEvent and return sessions ending in the period."""
+    open_starts: dict[tuple, deque] = defaultdict(deque)
+    sessions = []
+
+    for event in events:
+        if isinstance(event, StartedEvent):
+            open_starts[(event.task_id, event.affects_active)].append(event)
+        elif isinstance(event, StoppedEvent):
+            key = (event.task_id, event.affects_active)
+            started = open_starts[key].popleft() if open_starts[key] else None
+            stopped_ts = event.ts.replace(tzinfo=None)
+            if period_start <= stopped_ts <= period_end:
+                sessions.append({
+                    "task_id": event.task_id,
+                    "started": started.ts.replace(tzinfo=None) if started else None,
+                    "stopped": stopped_ts,
+                    "duration_s": event.duration_s,
+                    "started_note": started.note if started else "",
+                    "stopped_note": event.note,
+                })
+
+    time_spent: dict[UUID, float] = {}
+    for s in sessions:
+        uid = s["task_id"]
+        time_spent[uid] = time_spent.get(uid, 0.0) + s["duration_s"]
+    return sessions, time_spent, sum(time_spent.values())
+
+
+def _load_template(period: str, cfg) -> str:
+    if cfg.recap.template_dir:
+        override = Path(cfg.recap.template_dir).expanduser() / f"{period}.md.j2"
+        if override.exists():
+            return override.read_text(encoding="utf-8")
+    from importlib.resources import files as _res_files
+    return (_res_files("task") / "templates" / f"{period}.md.j2").read_text(encoding="utf-8")
+
+
+def recap_(
+    tasks: list[Task],
+    filter_args: ParsedFilter,
+    modify_args: ParsedModification,
+    *,
+    context: Path,
+    cfg,
+) -> tuple[list[Event], str]:
+    """Generate a recap document.
+
+    Usage: task recap day|week|month
+
+    Writes a markdown summary of what was planned and what got done.
+    Prompts before overwriting an existing file (default: No).
+    """
+    period = modify_args.description.strip().lower()
+    if period not in ("day", "week", "month"):
+        return [], "Usage: task recap day|week|month"
+
+    now = datetime.now()
+    today = now.date()
+
+    if period == "day":
+        period_start = datetime(today.year, today.month, today.day)
+        period_end = datetime(today.year, today.month, today.day, 23, 59, 59, 999999)
+        period_date: _date = today
+    elif period == "week":
+        monday = today - _timedelta(days=today.weekday())
+        period_start = datetime(monday.year, monday.month, monday.day)
+        period_end = period_start + _timedelta(days=7) - _timedelta(microseconds=1)
+        period_date = monday
+    else:
+        period_start = datetime(today.year, today.month, 1)
+        last_day = _calendar.monthrange(today.year, today.month)[1]
+        period_end = datetime(today.year, today.month, last_day, 23, 59, 59, 999999)
+        period_date = _date(today.year, today.month, 1)
+
+    done_in_period = [t for t in tasks if t.status == "done" and _in_period(t.end, period_start, period_end)]
+    due_in_period = [t for t in tasks if _in_period(t.due, period_start, period_end)]
+    overdue_in_period = [t for t in due_in_period if t.status != "done"]
+    today_list = [t for t in tasks if "today" in t.tags and t.status in ("pending", "waiting")] if period == "day" else []
+    week_list = [t for t in tasks if "week" in t.tags and t.status in ("pending", "waiting")] if period == "week" else []
+
+    raw_events = load_events(context)
+    sessions_in_period, time_spent_in_period, total_seconds_in_period = _compute_time_sessions(
+        effective_events(raw_events), period_start, period_end
+    )
+
+    template_text = _load_template(period, cfg)
+
+    from jinja2 import Environment
+    env = Environment(trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True)
+    content = env.from_string(template_text).render(
+        date=period_date,
+        period=period,
+        today_list=today_list,
+        week_list=week_list,
+        due_in_period=due_in_period,
+        overdue_in_period=overdue_in_period,
+        done_in_period=done_in_period,
+        time_spent_in_period=time_spent_in_period,
+        total_seconds_in_period=total_seconds_in_period,
+        sessions_in_period=sessions_in_period,
+    )
+
+    out_dir = Path(cfg.recap.output_dir).expanduser() if cfg.recap.output_dir else context / "recaps"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"recap-{period}-{period_date.strftime('%Y-%m-%d')}.md"
+
+    if out_path.exists():
+        if not sys.stdin.isatty():
+            return [], f"File already exists: {out_path}; run interactively to overwrite."
+        answer = input(f"Overwrite {out_path}? [y/N] ")
+        if answer.strip().lower() != "y":
+            return [], "Recap not written."
+
+    out_path.write_text(content, encoding="utf-8")
+    return [], f"Wrote {out_path}"
 
 
 def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:

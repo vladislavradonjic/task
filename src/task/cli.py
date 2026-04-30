@@ -142,6 +142,12 @@ def main() -> None:
 
     storage.assign_display_ids(tasks)
 
+    if command == "recap":
+        _, message = fn(tasks, parsed_filter, parsed_modification, context=context, cfg=cfg)
+        if message:
+            print(message)
+        return
+
     events, message = fn(tasks, parsed_filter, parsed_modification)
     for event in events:
         storage.append_event(context, event)

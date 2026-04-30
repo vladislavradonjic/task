@@ -1,0 +1,41 @@
+# Recap — {{ date.strftime('%B %Y') }}
+
+## Planned
+
+{% if due_in_period %}
+**Due this month**
+{% for t in due_in_period %}
+- {% if t.id %}#{{ t.id }} {% endif %}{{ t.description }}
+{% endfor %}
+
+{% endif %}
+{% if overdue_in_period %}
+**Became overdue**
+{% for t in overdue_in_period %}
+- {% if t.id %}#{{ t.id }} {% endif %}{{ t.description }}
+{% endfor %}
+
+{% endif %}
+{% if not due_in_period and not overdue_in_period %}
+*Nothing planned.*
+
+{% endif %}
+## Done
+
+{% if done_in_period %}
+{% for t in done_in_period %}
+- [x] {% if t.id %}#{{ t.id }} {% endif %}{{ t.description }}
+{% endfor %}
+{% else %}
+*Nothing completed this month.*
+{% endif %}
+{% if total_seconds_in_period > 0 %}
+
+## Time
+
+**Total:** {{ (total_seconds_in_period // 3600)|int }}h {{ ((total_seconds_in_period % 3600) // 60)|int }}m
+
+{% for s in sessions_in_period %}
+- {% if s.started %}{{ s.started.strftime('%H:%M') }}–{% endif %}{{ s.stopped.strftime('%H:%M') }} ({{ (s.duration_s // 3600)|int }}h {{ ((s.duration_s % 3600) // 60)|int }}m){% if s.stopped_note %} — {{ s.stopped_note }}{% endif %}
+{% endfor %}
+{% endif %}
