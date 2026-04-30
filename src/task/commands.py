@@ -781,6 +781,73 @@ def context_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tupl
             return [], f"Unknown context subcommand: {subcmd!r}"
 
 
+def _tag_list_cmd(
+    tag: str,
+    tasks: list[Task],
+    filter_args: ParsedFilter,
+    modify_args: ParsedModification,
+) -> tuple[list[Event], str]:
+    subcmd = modify_args.description.strip().lower()
+
+    if subcmd == "clear":
+        targets = [t for t in tasks if tag in t.tags and t.status in ("pending", "waiting")]
+        if not targets:
+            return [], f"No tasks tagged +{tag}."
+        events = [
+            UpdatedEvent(
+                task_id=t.uuid,
+                changes={"tags": FieldChange(before=list(t.tags), after=[x for x in t.tags if x != tag])},
+            )
+            for t in targets
+        ]
+        return events, f"Cleared +{tag} from {_fmt(targets)}."
+
+    if filter_args.ids:
+        matched, err = _match_ids(tasks, filter_args, f"added to +{tag}")
+        if err:
+            return [], err
+        events = []
+        changed = []
+        for t in matched:
+            if tag not in t.tags:
+                events.append(
+                    UpdatedEvent(
+                        task_id=t.uuid,
+                        changes={"tags": FieldChange(before=list(t.tags), after=list(t.tags) + [tag])},
+                    )
+                )
+                changed.append(t)
+        if not events:
+            return [], f"All matched tasks already tagged +{tag}."
+        return events, f"Added +{tag} to {_fmt(changed)}."
+
+    visible = [t for t in tasks if tag in t.tags and t.status in ("pending", "waiting")]
+    if not visible:
+        return [], f"No tasks tagged +{tag}."
+    _render_task_table(visible, tasks)
+    return [], ""
+
+
+def today_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Manage the daily list.
+
+    Usage: task [<ids>] today [clear]
+
+    Bare: list tasks tagged +today. With IDs: add +today. 'clear': remove +today from all.
+    """
+    return _tag_list_cmd("today", tasks, filter_args, modify_args)
+
+
+def week_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Manage the weekly list.
+
+    Usage: task [<ids>] week [clear]
+
+    Bare: list tasks tagged +week. With IDs: add +week. 'clear': remove +week from all.
+    """
+    return _tag_list_cmd("week", tasks, filter_args, modify_args)
+
+
 def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """List tags in use.
 
