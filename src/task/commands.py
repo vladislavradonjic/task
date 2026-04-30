@@ -4,9 +4,11 @@ import json
 import re
 import shutil
 import sys
-from datetime import datetime
+from datetime import date as _date, datetime, timedelta as _timedelta
 from pathlib import Path
 from uuid import UUID
+
+import polars as pl
 
 import networkx as nx
 from rich.console import Console
@@ -121,26 +123,9 @@ def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModifi
     return [event], f"Created task {task.uuid}"
 
 
-def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
-    """List tasks.
-
-    Usage: task [filter] list [status:pending|waiting|done]
-
-    Shows pending always; waiting only when fewer than 10 pending exist.
-    """
-    status_filter = filter_args.properties.get("status")
-    if status_filter:
-        visible = [t for t in tasks if t.status == status_filter]
-    else:
-        pending = [t for t in tasks if t.status == "pending"]
-        waiting = [t for t in tasks if t.status == "waiting"]
-        visible = pending + (waiting if len(pending) < 10 else [])
-
-    if not visible:
-        return [], "No tasks."
-
-    urgency_scores = compute_urgency(tasks)
-    visible.sort(key=lambda t: (-urgency_scores.get(t.uuid, 0.0), t.entry))
+def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
+    urgency_scores = compute_urgency(all_tasks)
+    visible = sorted(visible, key=lambda t: (-urgency_scores.get(t.uuid, 0.0), t.entry))
 
     show_tags = any(t.tags for t in visible)
     show_project = any("project" in t.properties for t in visible)
@@ -161,6 +146,7 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
         table.add_column("Urgency", overflow="ellipsis")
 
     for task in visible:
+        id_str = str(task.id) if task.id is not None else "-"
         if has_flags:
             if "today" in task.tags and "week" in task.tags:
                 list_flag = "*"
@@ -171,9 +157,9 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
             else:
                 list_flag = " "
             active_flag = ">" if task.start is not None else " "
-            id_cell = f"{task.id}{list_flag}{active_flag}"
+            id_cell = f"{id_str}{list_flag}{active_flag}"
         else:
-            id_cell = str(task.id)
+            id_cell = id_str
         row = [id_cell, task.description]
         if show_tags:
             row.append(" ".join(f"+{t}" for t in task.tags))
@@ -184,6 +170,91 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
         table.add_row(*row)
 
     Console().print(table)
+
+
+def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """List tasks.
+
+    Usage: task [filter] list [status:pending|waiting|done]
+
+    Shows pending always; waiting only when fewer than 10 pending exist.
+    """
+    status_filter = filter_args.properties.get("status")
+    if status_filter:
+        visible = [t for t in tasks if t.status == status_filter]
+    else:
+        pending = [t for t in tasks if t.status == "pending"]
+        waiting = [t for t in tasks if t.status == "waiting"]
+        visible = pending + (waiting if len(pending) < 10 else [])
+
+    if not visible:
+        return [], "No tasks."
+
+    _render_task_table(visible, tasks)
+    return [], ""
+
+
+def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Filter tasks with a polars expression.
+
+    Usage: task query "<expression>"
+
+    Example: task query "col('priority') == 'H'"
+    Use & and | (not 'and'/'or') for boolean logic.
+    Available columns: uuid, id, description, status, tags, entry, due, wait, end, start,
+    plus any property names such as priority and project.
+    """
+    expr_str = modify_args.description.strip()
+    if not expr_str:
+        return [], 'No expression given. Usage: task query "<polars-expression>"'
+
+    all_prop_keys: set[str] = set()
+    for t in tasks:
+        all_prop_keys.update(t.properties.keys())
+
+    records: list[dict] = []
+    for task in tasks:
+        row: dict = {
+            "uuid": str(task.uuid),
+            "id": task.id,
+            "description": task.description,
+            "status": task.status,
+            "tags": task.tags,
+            "entry": task.entry,
+            "due": task.due,
+            "wait": task.wait,
+            "end": task.end,
+            "start": task.start,
+        }
+        for k in all_prop_keys:
+            row[k] = task.properties.get(k)
+        records.append(row)
+
+    if not records:
+        return [], "No tasks."
+
+    try:
+        df = pl.from_dicts(records, infer_schema_length=None)
+    except Exception as e:
+        return [], f"Error building query table: {e}"
+
+    try:
+        polars_expr = eval(
+            expr_str,
+            {"col": pl.col, "pl": pl, "date": _date, "datetime": datetime, "timedelta": _timedelta},
+        )
+        result = df.filter(polars_expr)
+    except SyntaxError as e:
+        return [], f"Syntax error in expression: {e}"
+    except Exception as e:
+        return [], f"Query error: {e}"
+
+    if result.is_empty():
+        return [], "No matching tasks."
+
+    matched_uuids = {UUID(u) for u in result["uuid"].to_list()}
+    matched = [t for t in tasks if t.uuid in matched_uuids]
+    _render_task_table(matched, tasks)
     return [], ""
 
 
