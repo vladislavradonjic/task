@@ -200,6 +200,45 @@ def test_list_flag_unflagged_task_gets_spaces_when_others_have_flags(capsys):
 
 
 # ---------------------------------------------------------------------------
+# list_ — urgency column and sort order
+# ---------------------------------------------------------------------------
+
+def test_list_shows_urgency_column_when_nonzero(capsys):
+    tasks = [Task(description="tagged", tags=["bug"])]
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert "Urgency" in captured.out
+
+
+def test_list_omits_urgency_column_when_all_zero(capsys):
+    # A brand-new task with no metadata has urgency 0 at the exact moment of creation.
+    from datetime import datetime
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    tasks = [Task(description="bare", entry=now)]
+    assign_display_ids(tasks)
+    from unittest.mock import patch
+    with patch("task.urgency.datetime") as mock_dt:
+        mock_dt.now.return_value = now
+        _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert "Urgency" not in captured.out
+
+
+def test_list_sorts_by_urgency_descending(capsys):
+    from datetime import datetime, timedelta
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    # high_urgency has priority H; low_urgency has nothing
+    high = Task(description="high urgency", entry=now, properties={"priority": "H"})
+    low = Task(description="low urgency", entry=now)
+    tasks = [low, high]  # deliberately reversed
+    assign_display_ids(tasks)
+    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
+    captured = capsys.readouterr()
+    assert captured.out.index("high urgency") < captured.out.index("low urgency")
+
+
+# ---------------------------------------------------------------------------
 # done_
 # ---------------------------------------------------------------------------
 

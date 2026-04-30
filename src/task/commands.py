@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
 from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, effective_events, load_events, rebuild_tasks, save_snapshot
+from task.urgency import compute_urgency
 
 
 def command_names() -> set[str]:
@@ -115,8 +116,12 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
     if not visible:
         return [], "No tasks."
 
+    urgency_scores = compute_urgency(tasks)
+    visible.sort(key=lambda t: (-urgency_scores.get(t.uuid, 0.0), t.entry))
+
     show_tags = any(t.tags for t in visible)
     show_project = any("project" in t.properties for t in visible)
+    show_urgency = any(urgency_scores.get(t.uuid, 0.0) != 0.0 for t in visible)
     has_flags = any(
         "today" in t.tags or "week" in t.tags or t.start is not None
         for t in visible
@@ -129,6 +134,8 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
         table.add_column("Tags", overflow="ellipsis")
     if show_project:
         table.add_column("Project", overflow="ellipsis")
+    if show_urgency:
+        table.add_column("Urgency", overflow="ellipsis")
 
     for task in visible:
         if has_flags:
@@ -149,6 +156,8 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
             row.append(" ".join(f"+{t}" for t in task.tags))
         if show_project:
             row.append(task.properties.get("project", ""))
+        if show_urgency:
+            row.append(f"{urgency_scores.get(task.uuid, 0.0):.1f}")
         table.add_row(*row)
 
     Console().print(table)
