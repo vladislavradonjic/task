@@ -6,19 +6,19 @@ import networkx as nx
 from task.models import Task
 
 # Default coefficients per urgency.md.
-# due-based factors (overdue +12, approaching due 0…+12) are deferred until
-# `due` is a typed first-class field on Task rather than a raw property string.
 _COEFF = {
-    "priority_H":  6.0,
-    "priority_M":  3.9,
-    "priority_L":  1.8,
-    "age":         2.0,   # max contribution at 365 days
-    "active":      4.0,
-    "blocking":    8.0,
-    "blocked":    -5.0,
-    "waiting":    -5.0,
-    "has_tags":    1.0,
-    "has_project": 1.0,
+    "priority_H":      6.0,
+    "priority_M":      3.9,
+    "priority_L":      1.8,
+    "overdue":        12.0,
+    "approaching_due": 12.0,  # max at due date; linear from 0 at 14 days out
+    "age":             2.0,   # max contribution at 365 days
+    "active":          4.0,
+    "blocking":        8.0,
+    "blocked":        -5.0,
+    "waiting":        -5.0,
+    "has_tags":        1.0,
+    "has_project":     1.0,
 }
 
 _TOPO_EPS = 0.001
@@ -36,8 +36,17 @@ def _base_score(task: Task, g: nx.DiGraph, now: datetime) -> float:
         score += _COEFF["priority_L"]
 
     # Strip tzinfo for arithmetic so naive and aware entries both work.
-    entry = task.entry.replace(tzinfo=None)
     now_naive = now.replace(tzinfo=None) if now.tzinfo is not None else now
+
+    if task.due is not None:
+        due_naive = task.due.replace(tzinfo=None)
+        days_until_due = (due_naive - now_naive).total_seconds() / 86400
+        if days_until_due < 0:
+            score += _COEFF["overdue"]
+        elif days_until_due < 14:
+            score += _COEFF["approaching_due"] * (1.0 - days_until_due / 14.0)
+
+    entry = task.entry.replace(tzinfo=None)
     age_days = max(0.0, (now_naive - entry).total_seconds() / 86400)
     score += _COEFF["age"] * min(age_days / 365.0, 1.0)
 

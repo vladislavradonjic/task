@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from rich.console import Console
 from rich.table import Table
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
 from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, effective_events, load_events, rebuild_tasks, save_snapshot
+from task.dates import parse_date
 from task.urgency import compute_urgency
 
 
@@ -89,10 +91,31 @@ def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModifi
     Usage: task add <description> [+tag] [-tag] [property:value]
     """
     tags = [t.lstrip("+") for t in modify_args.tags if t.startswith("+")]
+
+    raw = dict(modify_args.properties)
+    due: datetime | None = None
+    wait: datetime | None = None
+
+    if due_str := raw.pop("due", None):
+        try:
+            due = parse_date(due_str)
+        except ValueError as e:
+            return [], f"Invalid due date: {e}"
+
+    if wait_str := raw.pop("wait", None):
+        try:
+            wait = parse_date(wait_str)
+        except ValueError as e:
+            return [], f"Invalid wait date: {e}"
+
+    status = "waiting" if (wait is not None and wait > datetime.now()) else "pending"
     task = Task(
         description=modify_args.description,
+        status=status,
         tags=tags,
-        properties={k: v for k, v in modify_args.properties.items() if v is not None},
+        due=due,
+        wait=wait,
+        properties={k: v for k, v in raw.items() if v is not None},
     )
     event = CreatedEvent(task_id=task.uuid, snapshot=task)
     return [event], f"Created task {task.uuid}"
@@ -223,7 +246,7 @@ def _compute_changes(
         if new_tags != task.tags:
             changes["tags"] = FieldChange(before=list(task.tags), after=new_tags)
 
-    other_props = {k: v for k, v in modify_args.properties.items() if k != "depends"}
+    other_props = {k: v for k, v in modify_args.properties.items() if k not in ("depends", "due", "wait")}
     if other_props:
         new_props = dict(task.properties)
         for k, v in other_props.items():
@@ -256,6 +279,34 @@ def _compute_changes(
                     return {}, "Adding dependency would create a cycle."
         if new_deps != list(task.depends):
             changes["depends"] = FieldChange(before=list(task.depends), after=new_deps)
+
+    if "due" in modify_args.properties:
+        raw_due = modify_args.properties["due"]
+        if raw_due is None:
+            new_due: datetime | None = None
+        else:
+            try:
+                new_due = parse_date(raw_due)
+            except ValueError as e:
+                return {}, str(e)
+        if new_due != task.due:
+            changes["due"] = FieldChange(before=task.due, after=new_due)
+
+    if "wait" in modify_args.properties:
+        raw_wait = modify_args.properties["wait"]
+        if raw_wait is None:
+            new_wait: datetime | None = None
+        else:
+            try:
+                new_wait = parse_date(raw_wait)
+            except ValueError as e:
+                return {}, str(e)
+        if new_wait != task.wait:
+            changes["wait"] = FieldChange(before=task.wait, after=new_wait)
+        if new_wait is not None and new_wait > datetime.now() and task.status == "pending":
+            changes["status"] = FieldChange(before=task.status, after="waiting")
+        elif new_wait is None and task.status == "waiting":
+            changes["status"] = FieldChange(before=task.status, after="pending")
 
     return changes, ""
 

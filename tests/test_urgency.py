@@ -188,3 +188,45 @@ def test_urgency_empty_list():
 def test_urgency_all_done_returns_empty():
     tasks = [_task(status="done"), _task(status="deleted")]
     assert compute_urgency(tasks, now=_now()) == {}
+
+
+# ---------------------------------------------------------------------------
+# Due-date factors
+# ---------------------------------------------------------------------------
+
+def test_urgency_overdue():
+    t = _task(due=_now() - timedelta(days=1))
+    scores = compute_urgency([t], now=_now())
+    assert scores[t.uuid] == pytest.approx(_COEFF["overdue"], abs=0.01)
+
+
+def test_urgency_approaching_due_at_due_time():
+    # Due exactly now → full approaching_due coefficient
+    t = _task(due=_now())
+    scores = compute_urgency([t], now=_now())
+    assert scores[t.uuid] == pytest.approx(_COEFF["approaching_due"], abs=0.01)
+
+
+def test_urgency_approaching_due_at_7_days():
+    t = _task(due=_now() + timedelta(days=7))
+    scores = compute_urgency([t], now=_now())
+    expected = _COEFF["approaching_due"] * (1.0 - 7.0 / 14.0)
+    assert scores[t.uuid] == pytest.approx(expected, abs=0.01)
+
+
+def test_urgency_approaching_due_at_14_days_is_zero():
+    t = _task(due=_now() + timedelta(days=14))
+    scores = compute_urgency([t], now=_now())
+    assert scores[t.uuid] == pytest.approx(0.0, abs=0.01)
+
+
+def test_urgency_due_beyond_14_days_no_bonus():
+    t = _task(due=_now() + timedelta(days=30))
+    scores = compute_urgency([t], now=_now())
+    assert scores[t.uuid] == pytest.approx(0.0, abs=0.01)
+
+
+def test_urgency_no_due_no_bonus():
+    t = _task()
+    scores = compute_urgency([t], now=_now())
+    assert scores[t.uuid] == pytest.approx(0.0, abs=0.01)

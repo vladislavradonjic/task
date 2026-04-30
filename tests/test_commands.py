@@ -43,6 +43,36 @@ def test_add_drops_none_properties():
     assert "due" not in events[0].snapshot.properties
 
 
+def test_add_with_due_date():
+    from datetime import datetime
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="task", properties={"due": "2026-12-31"}))
+    assert len(events) == 1
+    assert events[0].snapshot.due == datetime(2026, 12, 31, 0, 0, 0)
+
+
+def test_add_with_invalid_due_returns_error():
+    events, message = add_([], ParsedFilter(), ParsedModification(description="task", properties={"due": "notadate"}))
+    assert events == []
+    assert "Invalid due date" in message
+
+
+def test_add_with_future_wait_creates_waiting():
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="task", properties={"wait": "2099-01-01"}))
+    assert events[0].snapshot.status == "waiting"
+    assert events[0].snapshot.wait is not None
+
+
+def test_add_with_past_wait_creates_pending():
+    events, _ = add_([], ParsedFilter(), ParsedModification(description="task", properties={"wait": "2000-01-01"}))
+    assert events[0].snapshot.status == "pending"
+
+
+def test_add_with_invalid_wait_returns_error():
+    events, message = add_([], ParsedFilter(), ParsedModification(description="task", properties={"wait": "notadate"}))
+    assert events == []
+    assert "Invalid wait date" in message
+
+
 # ---------------------------------------------------------------------------
 # list_
 # ---------------------------------------------------------------------------
@@ -462,6 +492,58 @@ def test_modify_multiple_tasks():
     events, message = modify_(tasks, ParsedFilter(ids=[1, 2]), ParsedModification(properties={"project": "work"}))
     assert len(events) == 2
     assert "2 tasks" in message
+
+
+def test_modify_set_due():
+    from datetime import datetime
+    from task.events import apply_event
+    tasks = [Task(description="task")]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(properties={"due": "2026-12-31"}))
+    assert len(events) == 1
+    result = apply_event(tasks, events[0])
+    assert result[0].due == datetime(2026, 12, 31, 0, 0, 0)
+
+
+def test_modify_clear_due():
+    from datetime import datetime
+    from task.events import apply_event
+    tasks = [Task(description="task", due=datetime(2026, 12, 31))]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(properties={"due": None}))
+    assert len(events) == 1
+    result = apply_event(tasks, events[0])
+    assert result[0].due is None
+
+
+def test_modify_set_wait_transitions_to_waiting():
+    from task.events import apply_event
+    tasks = [Task(description="task")]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(properties={"wait": "2099-01-01"}))
+    assert len(events) == 1
+    result = apply_event(tasks, events[0])
+    assert result[0].status == "waiting"
+
+
+def test_modify_clear_wait_transitions_to_pending():
+    from datetime import datetime
+    from task.events import apply_event
+    tasks = [Task(description="task", status="waiting", wait=datetime(2099, 1, 1))]
+    assign_display_ids(tasks)
+    events, _ = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(properties={"wait": None}))
+    assert len(events) == 1
+    result = apply_event(tasks, events[0])
+    assert result[0].status == "pending"
+    assert result[0].wait is None
+
+
+def test_modify_invalid_due_returns_error():
+    tasks = [Task(description="task")]
+    assign_display_ids(tasks)
+    events, message = modify_(tasks, ParsedFilter(ids=[1]), ParsedModification(properties={"due": "notadate"}))
+    assert events == []
+    assert "unrecognized date" in message.lower() or "invalid" in message.lower()
 
 
 # ---------------------------------------------------------------------------

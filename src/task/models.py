@@ -29,6 +29,7 @@ class Task(BaseModel):
     properties: dict[str, str] = {}
     entry: datetime = Field(default_factory=datetime.now)
     end: datetime | None = None
+    due: datetime | None = None
     wait: datetime | None = None
     start: datetime | None = None
     
