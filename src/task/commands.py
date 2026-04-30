@@ -5,10 +5,81 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from uuid import UUID
+
+import networkx as nx
 from rich.console import Console
 from rich.table import Table
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
-from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, load_events, rebuild_tasks, save_snapshot
+from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, effective_events, load_events, rebuild_tasks, save_snapshot
+
+
+def command_names() -> set[str]:
+    return {
+        name[:-1]
+        for name, obj in globals().items()
+        if name.endswith("_") and not name.startswith("_") and callable(obj)
+    }
+
+
+def _read_state(d: Path) -> dict:
+    return json.loads((d / "state.json").read_text())
+
+
+def _init_context_dir(ctx: Path) -> None:
+    ctx.mkdir(parents=True, exist_ok=True)
+    (ctx / "meta.json").write_text(json.dumps({"version": 1}, indent=2))
+    (ctx / "events.jsonl").touch()
+    (ctx / "tasks.json").write_text("[]")
+    (ctx / "recaps").mkdir(exist_ok=True)
+
+
+def _match_ids(tasks: list[Task], filter_args: ParsedFilter, verb: str) -> tuple[list[Task], str]:
+    if not filter_args.ids:
+        return [], f"No filter given; nothing {verb}."
+    matched = [t for t in tasks if t.id in set(filter_args.ids)]
+    if not matched:
+        return [], "No matching tasks."
+    return matched, ""
+
+
+def _parse_dep_ids(text: str) -> tuple[list[int], list[int]]:
+    """Parse signed/unsigned IDs from a depends description. Returns (to_add, to_remove)."""
+    to_add, to_remove = [], []
+    for part in re.split(r'[\s,]+', text.strip()):
+        if not part:
+            continue
+        if part.startswith('-') and part[1:].isdigit():
+            to_remove.append(int(part[1:]))
+        elif part.startswith('+') and part[1:].isdigit():
+            to_add.append(int(part[1:]))
+        elif part.isdigit():
+            to_add.append(int(part))
+    return to_add, to_remove
+
+
+def _build_graph(tasks: list[Task]) -> nx.DiGraph:
+    """DiGraph where edge X→Y means Y depends on X (X blocks Y)."""
+    g = nx.DiGraph()
+    g.add_nodes_from(t.uuid for t in tasks)
+    for task in tasks:
+        for dep_uuid in task.depends:
+            g.add_edge(dep_uuid, task.uuid)
+    return g
+
+
+def _apply_dep_changes(
+    current: list[UUID],
+    to_add: list[UUID],
+    to_remove: set[UUID],
+    self_uuid: UUID,
+) -> list[UUID]:
+    """Return new depends list: removes then adds, deduplicating, excluding self."""
+    result = [u for u in current if u not in to_remove]
+    for u in to_add:
+        if u not in result and u != self_uuid:
+            result.append(u)
+    return result
 
 
 def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
@@ -97,11 +168,9 @@ def done_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
 
     Refuses on waiting tasks — clear wait: first.
     """
-    if not filter_args.ids:
-        return [], "No filter given; nothing done."
-    matched = [t for t in tasks if t.id in set(filter_args.ids)]
-    if not matched:
-        return [], "No matching tasks."
+    matched, err = _match_ids(tasks, filter_args, "done")
+    if err:
+        return [], err
     waiting = [t for t in matched if t.status == "waiting"]
     if waiting:
         desc = ", ".join(f'"{t.description}"' for t in waiting)
@@ -115,16 +184,18 @@ def delete_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
 
     Usage: task <id> delete
     """
-    if not filter_args.ids:
-        return [], "No filter given; nothing deleted."
-    matched = [t for t in tasks if t.id in set(filter_args.ids)]
-    if not matched:
-        return [], "No matching tasks."
+    matched, err = _match_ids(tasks, filter_args, "deleted")
+    if err:
+        return [], err
     events = [DeletedEvent(task_id=t.uuid) for t in matched]
     return events, f"Deleted {_fmt(matched)}."
 
 
-def _compute_changes(task: Task, modify_args: ParsedModification) -> dict[str, FieldChange]:
+def _compute_changes(
+    task: Task,
+    modify_args: ParsedModification,
+    all_tasks: list[Task],
+) -> tuple[dict[str, FieldChange], str]:
     changes: dict[str, FieldChange] = {}
 
     if modify_args.description and modify_args.description != task.description:
@@ -143,9 +214,10 @@ def _compute_changes(task: Task, modify_args: ParsedModification) -> dict[str, F
         if new_tags != task.tags:
             changes["tags"] = FieldChange(before=list(task.tags), after=new_tags)
 
-    if modify_args.properties:
+    other_props = {k: v for k, v in modify_args.properties.items() if k != "depends"}
+    if other_props:
         new_props = dict(task.properties)
-        for k, v in modify_args.properties.items():
+        for k, v in other_props.items():
             if v is None:
                 new_props.pop(k, None)
             else:
@@ -153,7 +225,30 @@ def _compute_changes(task: Task, modify_args: ParsedModification) -> dict[str, F
         if new_props != task.properties:
             changes["properties"] = FieldChange(before=dict(task.properties), after=new_props)
 
-    return changes
+    if "depends" in modify_args.properties:
+        dep_value = modify_args.properties["depends"]
+        if dep_value is None:
+            new_deps: list[UUID] = []
+        else:
+            to_add_ids, to_remove_ids = _parse_dep_ids(dep_value)
+            id_map = {t.id: t.uuid for t in all_tasks if t.id is not None}
+            missing = [i for i in to_add_ids + to_remove_ids if i not in id_map]
+            if missing:
+                return {}, f"Unknown task ID(s): {', '.join(str(i) for i in missing)}"
+            to_add_uuids = [id_map[i] for i in to_add_ids]
+            to_remove_uuids = {id_map[i] for i in to_remove_ids}
+            new_deps = _apply_dep_changes(task.depends, to_add_uuids, to_remove_uuids, task.uuid)
+            if to_add_uuids:
+                g = _build_graph(all_tasks)
+                for u in to_add_uuids:
+                    if u != task.uuid:
+                        g.add_edge(u, task.uuid)
+                if not nx.is_directed_acyclic_graph(g):
+                    return {}, "Adding dependency would create a cycle."
+        if new_deps != list(task.depends):
+            changes["depends"] = FieldChange(before=list(task.depends), after=new_deps)
+
+    return changes, ""
 
 
 def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
@@ -163,19 +258,122 @@ def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
 
     Use property: (empty value) to clear a field.
     """
-    if not filter_args.ids:
-        return [], "No filter given; nothing modified."
-    matched = [t for t in tasks if t.id in set(filter_args.ids)]
-    if not matched:
-        return [], "No matching tasks."
+    matched, err = _match_ids(tasks, filter_args, "modified")
+    if err:
+        return [], err
     events = []
     for task in matched:
-        changes = _compute_changes(task, modify_args)
+        changes, err = _compute_changes(task, modify_args, tasks)
+        if err:
+            return [], err
         if changes:
             events.append(UpdatedEvent(task_id=task.uuid, changes=changes))
     if not events:
         return [], "Nothing to change."
     return events, f"Modified {_fmt(matched)}."
+
+
+def depends_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Add or remove task dependencies.
+
+    Usage: task <id> depends <id>[,<id>...] | -<id>
+
+    Unsigned or +-prefixed IDs are added; --prefixed IDs are removed.
+    Adding a duplicate or self-reference is a no-op. Cycles are rejected.
+    """
+    matched, err = _match_ids(tasks, filter_args, "modified")
+    if err:
+        return [], err
+
+    if not modify_args.description.strip():
+        return [], "No dependency IDs given."
+
+    to_add_ids, to_remove_ids = _parse_dep_ids(modify_args.description)
+    id_map = {t.id: t.uuid for t in tasks if t.id is not None}
+
+    missing = [i for i in to_add_ids + to_remove_ids if i not in id_map]
+    if missing:
+        return [], f"Unknown task ID(s): {', '.join(str(i) for i in missing)}"
+
+    to_add_uuids = [id_map[i] for i in to_add_ids]
+    to_remove_uuids = {id_map[i] for i in to_remove_ids}
+
+    if to_add_uuids:
+        g = _build_graph(tasks)
+        for task in matched:
+            for u in to_add_uuids:
+                if u != task.uuid:
+                    g.add_edge(u, task.uuid)
+        if not nx.is_directed_acyclic_graph(g):
+            return [], "Adding dependency would create a cycle."
+
+    events = []
+    for task in matched:
+        new_deps = _apply_dep_changes(task.depends, to_add_uuids, to_remove_uuids, task.uuid)
+        if new_deps != list(task.depends):
+            events.append(UpdatedEvent(task_id=task.uuid, changes={
+                "depends": FieldChange(before=list(task.depends), after=new_deps),
+            }))
+
+    if not events:
+        return [], "Nothing to change."
+    return events, f"Updated dependencies on {_fmt(matched)}."
+
+
+def blocks_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Add or remove blocking relationships.
+
+    Usage: task <id> blocks <id>[,<id>...]
+
+    'task A blocks B' means B depends on A. Prefix IDs with - to remove.
+    """
+    matched, err = _match_ids(tasks, filter_args, "modified")
+    if err:
+        return [], err
+
+    if not modify_args.description.strip():
+        return [], "No target IDs given."
+
+    to_add_ids, to_remove_ids = _parse_dep_ids(modify_args.description)
+    id_map = {t.id: t.uuid for t in tasks if t.id is not None}
+    uuid_to_task = {t.uuid: t for t in tasks}
+
+    missing = [i for i in to_add_ids + to_remove_ids if i not in id_map]
+    if missing:
+        return [], f"Unknown task ID(s): {', '.join(str(i) for i in missing)}"
+
+    blocker_uuids = [t.uuid for t in matched]
+    blocker_set = set(blocker_uuids)
+    add_targets = [id_map[i] for i in to_add_ids]
+    remove_targets = {id_map[i] for i in to_remove_ids}
+
+    if add_targets:
+        g = _build_graph(tasks)
+        for target_uuid in add_targets:
+            target_task = uuid_to_task[target_uuid]
+            for u in blocker_uuids:
+                if u not in target_task.depends and u != target_uuid:
+                    g.add_edge(u, target_uuid)
+        if not nx.is_directed_acyclic_graph(g):
+            return [], "Adding blocking relationship would create a cycle."
+
+    events = []
+    for target_uuid in set(add_targets) | remove_targets:
+        target_task = uuid_to_task[target_uuid]
+        new_deps = _apply_dep_changes(
+            target_task.depends,
+            blocker_uuids if target_uuid in set(add_targets) else [],
+            blocker_set if target_uuid in remove_targets else set(),
+            target_uuid,
+        )
+        if new_deps != list(target_task.depends):
+            events.append(UpdatedEvent(task_id=target_uuid, changes={
+                "depends": FieldChange(before=list(target_task.depends), after=new_deps),
+            }))
+
+    if not events:
+        return [], "Nothing to change."
+    return events, "Updated blocking relationships."
 
 
 def undo_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
@@ -187,22 +385,15 @@ def undo_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
     """
     d = get_data_dir()
     ctx = active_context(d)
-    events = load_events(ctx)
+    all_events = load_events(ctx)
 
-    undone_ts = {e.undid_ts for e in events if isinstance(e, UndoneEvent)}
-
-    target = None
-    for event in reversed(events):
-        if isinstance(event, UndoneEvent) or event.ts in undone_ts:
-            continue
-        target = event
-        break
+    target = next(reversed(effective_events(all_events)), None)
 
     if target is None:
         return [], "Nothing to undo."
 
     desc = next(
-        (e.snapshot.description for e in events if isinstance(e, CreatedEvent) and e.task_id == target.task_id),
+        (e.snapshot.description for e in all_events if isinstance(e, CreatedEvent) and e.task_id == target.task_id),
         str(target.task_id),
     )
 
@@ -215,11 +406,11 @@ def undo_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
 
 
 def _ctx_show(d: Path) -> str:
-    return json.loads((d / "state.json").read_text())["active"]
+    return _read_state(d)["active"]
 
 
 def _ctx_list(d: Path) -> str:
-    active = json.loads((d / "state.json").read_text())["active"]
+    active = _read_state(d)["active"]
     contexts = sorted(p.name for p in d.iterdir() if p.is_dir() and (p / "meta.json").exists())
     return "\n".join(f"{'*' if c == active else ' '} {c}" for c in contexts)
 
@@ -230,7 +421,7 @@ def _ctx_use(d: Path, name: str | None) -> str:
     if not (d / name / "meta.json").exists():
         return f"Context '{name}' does not exist. Run `task context list`."
     state_file = d / "state.json"
-    state = json.loads(state_file.read_text())
+    state = _read_state(d)
     state["active"] = name
     state_file.write_text(json.dumps(state, indent=2))
     return f"Active context: {name}"
@@ -244,22 +435,18 @@ def _ctx_create(d: Path, name: str | None) -> str:
     ctx = d / name
     if ctx.exists():
         return f"Context '{name}' already exists."
-    ctx.mkdir(parents=True)
-    (ctx / "meta.json").write_text(json.dumps({"version": 1}, indent=2))
-    (ctx / "events.jsonl").touch()
-    (ctx / "tasks.json").write_text("[]")
-    (ctx / "recaps").mkdir()
+    _init_context_dir(ctx)
     return f"Created context '{name}'."
 
 
 def _ctx_delete(d: Path, name: str | None) -> str:
     if name is None:
         return "Usage: task context delete <name>"
-    active = json.loads((d / "state.json").read_text())["active"]
+    active = _read_state(d)["active"]
     if name == active:
         return f"Cannot delete the active context '{name}'. Switch first with `task context use <other>`."
     ctx = d / name
-    if not ctx.exists():
+    if not (ctx / "meta.json").exists():
         return f"Context '{name}' does not exist."
     if not sys.stdin.isatty():
         return "Cannot confirm deletion non-interactively; run in a TTY."
@@ -277,24 +464,17 @@ def help_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
 
     Bare form lists all commands. With a command name, shows its full description.
     """
-    import task.commands as _mod
-
     target = modify_args.description.strip() if modify_args.description else None
 
     if target:
-        fn = getattr(_mod, f"{target}_", None)
+        fn = globals().get(f"{target}_")
         if fn is None or not callable(fn):
             return [], f"Unknown command: {target!r}"
         return [], (fn.__doc__ or "(no description)").strip()
 
-    names = sorted(
-        name[:-1]
-        for name in dir(_mod)
-        if name.endswith("_") and not name.startswith("_") and callable(getattr(_mod, name))
-    )
     lines = []
-    for name in names:
-        fn = getattr(_mod, f"{name}_")
+    for name in sorted(command_names()):
+        fn = globals()[f"{name}_"]
         doc = (fn.__doc__ or "").strip()
         first_line = doc.splitlines()[0] if doc else "(no description)"
         lines.append(f"  {name:<12}{first_line}")
@@ -341,7 +521,5 @@ def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
         return [], f"Already initialized at {d}"
     d.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps({"version": 1, "active": "default"}, indent=2))
-    default_context = d / "default"
-    default_context.mkdir(parents=True, exist_ok=True)
-    (default_context / "meta.json").write_text(json.dumps({"version": 1}, indent=2))
+    _init_context_dir(d / "default")
     return [], f"Initialized at {d}"

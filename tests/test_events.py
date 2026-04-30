@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from task.events import apply_event
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, Task, UpdatedEvent
 
@@ -66,3 +68,16 @@ def test_apply_updated_leaves_other_tasks_unchanged():
     )
     result = apply_event([t1, t2], event)
     assert result[1].description == "second"
+
+
+def test_apply_updated_coerces_uuid_strings_in_depends():
+    # Simulates replay from disk: FieldChange.after arrives as JSON strings, not UUID objects.
+    dep_uuid = UUID("12345678-1234-5678-1234-567812345678")
+    task = Task(description="test")
+    event = UpdatedEvent(
+        task_id=task.uuid,
+        changes={"depends": FieldChange(before=[], after=[str(dep_uuid)])},
+    )
+    result = apply_event([task], event)
+    assert result[0].depends == [dep_uuid]
+    assert isinstance(result[0].depends[0], UUID)

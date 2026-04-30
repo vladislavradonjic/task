@@ -25,6 +25,7 @@ class Task(BaseModel):
     description: str
     status: TaskStatus = "pending"
     tags: list[str] = []
+    depends: list[UUID] = []
     properties: dict[str, str] = {}
     entry: datetime = Field(default_factory=datetime.now)
     end: datetime | None = None

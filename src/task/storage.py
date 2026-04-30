@@ -43,13 +43,14 @@ def load_events(context: Path) -> list[Event]:
     ]
 
 
-def rebuild_tasks(context: Path) -> list[Task]:
-    events = load_events(context)
+def effective_events(events: list[Event]) -> list[Event]:
     undone_ts = {e.undid_ts for e in events if isinstance(e, UndoneEvent)}
+    return [e for e in events if not isinstance(e, UndoneEvent) and e.ts not in undone_ts]
+
+
+def rebuild_tasks(context: Path) -> list[Task]:
     tasks: list[Task] = []
-    for event in events:
-        if isinstance(event, UndoneEvent) or event.ts in undone_ts:
-            continue
+    for event in effective_events(load_events(context)):
         tasks = apply_event(tasks, event)
     return tasks
 

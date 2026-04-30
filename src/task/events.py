@@ -19,7 +19,10 @@ def apply_event(tasks: list[Task], event: Event) -> list[Task]:
             ]
         case UpdatedEvent():
             return [
-                t.model_copy(update={f: c.after for f, c in event.changes.items()})
+                Task.model_validate({
+                    **t.model_dump(mode="python"),
+                    **{f: c.after for f, c in event.changes.items()},
+                })
                 if t.uuid == event.task_id else t
                 for t in tasks
             ]

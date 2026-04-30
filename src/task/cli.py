@@ -7,20 +7,9 @@ from task.events import apply_event
 from task.parse import parse_filter, parse_modification
 
 
-def _command_names() -> set[str]:
-    """Command names are exported functions in commands.py (name without trailing _)."""
-    return {
-        name[:-1]
-        for name in dir(commands)
-        if name.endswith("_")
-        and not name.startswith("_")
-        and callable(getattr(commands, name))
-    }
-
-
 def main() -> None:
     args = sys.argv[1:]
-    known = _command_names()
+    known = commands.command_names()
 
     filter_args: list[str] = []
     command: str | None = None
