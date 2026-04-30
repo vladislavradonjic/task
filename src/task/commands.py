@@ -145,6 +145,9 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
     if show_urgency:
         table.add_column("Urgency", overflow="ellipsis")
 
+    active_uuids = {t.uuid for t in all_tasks if t.status in ("pending", "waiting")}
+    blocked_uuids = {t.uuid for t in visible if any(dep in active_uuids for dep in t.depends)}
+
     for task in visible:
         id_str = str(task.id) if task.id is not None else "-"
         if has_flags:
@@ -167,17 +170,24 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
             row.append(task.properties.get("project", ""))
         if show_urgency:
             row.append(f"{urgency_scores.get(task.uuid, 0.0):.1f}")
-        table.add_row(*row)
+        table.add_row(*row, style="dim" if task.uuid in blocked_uuids else None)
 
     Console().print(table)
+
+
+def _project_match(task_project: str | None, prefix: str) -> bool:
+    if task_project is None:
+        return False
+    return task_project == prefix or task_project.startswith(prefix + ".")
 
 
 def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """List tasks.
 
-    Usage: task [filter] list [status:pending|waiting|done]
+    Usage: task [filter] list [status:pending|waiting|done] [project:<prefix>]
 
     Shows pending always; waiting only when fewer than 10 pending exist.
+    project:work matches work and any work.* subtree.
     """
     status_filter = filter_args.properties.get("status")
     if status_filter:
@@ -186,6 +196,10 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
         pending = [t for t in tasks if t.status == "pending"]
         waiting = [t for t in tasks if t.status == "waiting"]
         visible = pending + (waiting if len(pending) < 10 else [])
+
+    project_filter = filter_args.properties.get("project")
+    if project_filter:
+        visible = [t for t in visible if _project_match(t.properties.get("project"), project_filter)]
 
     if not visible:
         return [], "No tasks."
@@ -765,6 +779,57 @@ def context_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tupl
             return [], _ctx_delete(d, name)
         case _:
             return [], f"Unknown context subcommand: {subcmd!r}"
+
+
+def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """List tags in use.
+
+    Usage: task tags
+
+    Shows each tag and how many pending/waiting tasks carry it, sorted by count.
+    """
+    active = [t for t in tasks if t.status in ("pending", "waiting")]
+    counts: dict[str, int] = {}
+    for task in active:
+        for tag in task.tags:
+            counts[tag] = counts.get(tag, 0) + 1
+
+    if not counts:
+        return [], "No tags in use."
+
+    table = Table(show_header=True)
+    table.add_column("Tag")
+    table.add_column("Count", justify="right")
+    for tag, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+        table.add_row(f"+{tag}", str(count))
+    Console().print(table)
+    return [], ""
+
+
+def projects_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """List projects in use.
+
+    Usage: task projects
+
+    Shows each project and how many pending/waiting tasks are assigned to it, sorted by count.
+    """
+    active = [t for t in tasks if t.status in ("pending", "waiting")]
+    counts: dict[str, int] = {}
+    for task in active:
+        proj = task.properties.get("project")
+        if proj:
+            counts[proj] = counts.get(proj, 0) + 1
+
+    if not counts:
+        return [], "No projects in use."
+
+    table = Table(show_header=True)
+    table.add_column("Project")
+    table.add_column("Count", justify="right")
+    for proj, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+        table.add_row(proj, str(count))
+    Console().print(table)
+    return [], ""
 
 
 def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
