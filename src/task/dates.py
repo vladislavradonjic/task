@@ -31,6 +31,20 @@ _MONTHS = {
 }
 
 _OFFSET = re.compile(r'^([+-]?)(\d+)(min|h|d|w|m|y)$')
+_DURATION = re.compile(r'^(?:(\d+)h)?(\d+)(?:min|m)$|^(\d+)h$')
+
+
+def parse_duration_seconds(s: str) -> float:
+    """Parse a duration string like '2h', '30min', '1h30m' into seconds."""
+    m = _DURATION.match(s.strip())
+    if not m:
+        raise ValueError(f"unrecognized duration {s!r}; expected forms: 2h, 30min, 1h30m")
+    if m.group(3) is not None:
+        # matched (\d+)h only
+        return int(m.group(3)) * 3600
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2))
+    return hours * 3600 + minutes * 60
 
 
 def parse_date(value: str, now: datetime | None = None) -> datetime:

@@ -13,9 +13,9 @@ import polars as pl
 import networkx as nx
 from rich.console import Console
 from rich.table import Table
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, StartedEvent, StoppedEvent, Task, UpdatedEvent, UndoneEvent
 from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, effective_events, load_events, rebuild_tasks, save_snapshot
-from task.dates import parse_date
+from task.dates import parse_date, parse_duration_seconds
 from task.urgency import compute_urgency
 
 
@@ -258,6 +258,124 @@ def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
     return [], ""
 
 
+def _auto_stop(task: Task, now: datetime) -> StoppedEvent:
+    duration_s = max(0.0, (now - task.start.replace(tzinfo=None)).total_seconds())
+    return StoppedEvent(task_id=task.uuid, ts=now, duration_s=duration_s, note="")
+
+
+def start_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Start time tracking on a task.
+
+    Usage: task <id> start [note]
+
+    Only pending tasks are startable. Any currently active task is stopped first.
+    """
+    if modify_args.tags or modify_args.properties:
+        return [], "Tags and properties are not valid on start."
+    matched, err = _match_ids(tasks, filter_args, "started")
+    if err:
+        return [], err
+    if len(matched) > 1:
+        return [], "Can only start one task at a time."
+    task = matched[0]
+    if task.status != "pending":
+        return [], f'Cannot start a {task.status} task; only pending tasks are startable.'
+
+    now = datetime.now()
+    events: list[Event] = []
+    active = next((t for t in tasks if t.start is not None), None)
+    if active is not None:
+        if active.uuid == task.uuid:
+            return [], f'"{task.description}" is already active.'
+        events.append(_auto_stop(active, now))
+
+    events.append(StartedEvent(task_id=task.uuid, ts=now, note=modify_args.description.strip()))
+    return events, f'Started "{task.description}".'
+
+
+def stop_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Stop time tracking on the active task.
+
+    Usage: task [<id>] stop [note]
+
+    Bare form (no id) targets the currently active task.
+    """
+    if modify_args.tags or modify_args.properties:
+        return [], "Tags and properties are not valid on stop."
+    note = modify_args.description.strip()
+    now = datetime.now()
+
+    if not filter_args.ids and not filter_args.tags and not filter_args.properties:
+        active = next((t for t in tasks if t.start is not None), None)
+        if active is None:
+            return [], "No task is currently active."
+        ev = _auto_stop(active, now)
+        ev = StoppedEvent(task_id=active.uuid, ts=now, duration_s=ev.duration_s, note=note)
+        return [ev], f'Stopped "{active.description}".'
+
+    matched, err = _match_ids(tasks, filter_args, "stopped")
+    if err:
+        return [], err
+    if len(matched) > 1:
+        return [], "Can only stop one task at a time."
+    task = matched[0]
+    if task.start is None:
+        return [], f'"{task.description}" is not active.'
+    active = next((t for t in tasks if t.start is not None), None)
+    if active and active.uuid != task.uuid:
+        return [], f'"{task.description}" is not the active task.'
+    duration_s = max(0.0, (now - task.start.replace(tzinfo=None)).total_seconds())
+    return [StoppedEvent(task_id=task.uuid, ts=now, duration_s=duration_s, note=note)], f'Stopped "{task.description}".'
+
+
+def log_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Manually log a time session.
+
+    Usage: task <id> log <duration> [at:<end-time>] [note]
+
+    Duration forms: 2h, 30min, 1h30m. at: defaults to now. Future end times refused.
+    Emits a started/stopped pair without affecting the task's active state.
+    """
+    if modify_args.tags or any(k != "at" for k in modify_args.properties):
+        return [], "Only the at: property is valid on log; tags are not allowed."
+    matched, err = _match_ids(tasks, filter_args, "logged")
+    if err:
+        return [], err
+    if len(matched) > 1:
+        return [], "Can only log time for one task at a time."
+    task = matched[0]
+
+    parts = modify_args.description.strip().split()
+    if not parts:
+        return [], 'No duration given. Usage: task <id> log <duration> [at:<when>] [note]'
+    try:
+        duration_s = parse_duration_seconds(parts[0])
+    except ValueError as e:
+        return [], f"Invalid duration: {e}"
+    if duration_s <= 0:
+        return [], "Duration must be positive."
+
+    now = datetime.now()
+    at_raw = modify_args.properties.get("at")
+    if at_raw:
+        try:
+            end_time = parse_date(at_raw)
+        except ValueError as e:
+            return [], f"Invalid at: date: {e}"
+    else:
+        end_time = now
+    if end_time.replace(tzinfo=None) > now:
+        return [], "Cannot log a session ending in the future."
+
+    start_time = end_time.replace(tzinfo=None) - _timedelta(seconds=duration_s)
+    note = " ".join(parts[1:])
+
+    return [
+        StartedEvent(task_id=task.uuid, ts=start_time, note=note, affects_active=False),
+        StoppedEvent(task_id=task.uuid, ts=end_time.replace(tzinfo=None), duration_s=duration_s, note=note, affects_active=False),
+    ], f'Logged {parts[0]} for "{task.description}".'
+
+
 def _fmt(tasks: list[Task]) -> str:
     if len(tasks) == 1:
         return f'"{tasks[0].description}"'
@@ -278,7 +396,12 @@ def done_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
     if waiting:
         desc = ", ".join(f'"{t.description}"' for t in waiting)
         return [], f"Task is waiting; clear wait: first: {desc}"
-    events = [DoneEvent(task_id=t.uuid) for t in matched]
+    now = datetime.now()
+    events: list[Event] = []
+    for t in matched:
+        if t.start is not None:
+            events.append(_auto_stop(t, now))
+        events.append(DoneEvent(task_id=t.uuid))
     return events, f"Marked {_fmt(matched)} done."
 
 
@@ -290,7 +413,12 @@ def delete_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
     matched, err = _match_ids(tasks, filter_args, "deleted")
     if err:
         return [], err
-    events = [DeletedEvent(task_id=t.uuid) for t in matched]
+    now = datetime.now()
+    events: list[Event] = []
+    for t in matched:
+        if t.start is not None:
+            events.append(_auto_stop(t, now))
+        events.append(DeletedEvent(task_id=t.uuid))
     return events, f"Deleted {_fmt(matched)}."
 
 

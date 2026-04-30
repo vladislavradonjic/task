@@ -66,6 +66,23 @@ class UpdatedEvent(BaseModel):
     changes: dict[str, FieldChange]
 
 
+class StartedEvent(BaseModel):
+    type: Literal["started"] = "started"
+    ts: datetime = Field(default_factory=datetime.now)
+    task_id: UUID
+    note: str = ""
+    affects_active: bool = True  # False for log entries — records history without changing task.start
+
+
+class StoppedEvent(BaseModel):
+    type: Literal["stopped"] = "stopped"
+    ts: datetime = Field(default_factory=datetime.now)
+    task_id: UUID
+    duration_s: float
+    note: str = ""
+    affects_active: bool = True  # False for log entries
+
+
 class UndoneEvent(BaseModel):
     type: Literal["undone"] = "undone"
     ts: datetime = Field(default_factory=datetime.now)
@@ -75,6 +92,6 @@ class UndoneEvent(BaseModel):
 
 
 Event = Annotated[
-    Union[CreatedEvent, DoneEvent, DeletedEvent, UpdatedEvent, UndoneEvent],
+    Union[CreatedEvent, DoneEvent, DeletedEvent, UpdatedEvent, StartedEvent, StoppedEvent, UndoneEvent],
     Field(discriminator="type"),
 ]
