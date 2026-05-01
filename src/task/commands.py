@@ -276,9 +276,9 @@ def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
     return [], ""
 
 
-def _auto_stop(task: Task, now: datetime) -> StoppedEvent:
+def _auto_stop(task: Task, now: datetime, note: str = "") -> StoppedEvent:
     duration_s = max(0.0, (now - task.start.replace(tzinfo=None)).total_seconds())
-    return StoppedEvent(task_id=task.uuid, ts=now, duration_s=duration_s, note="")
+    return StoppedEvent(task_id=task.uuid, ts=now, duration_s=duration_s, note=note)
 
 
 def start_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
@@ -327,9 +327,7 @@ def stop_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
         active = next((t for t in tasks if t.start is not None), None)
         if active is None:
             return [], "No task is currently active."
-        ev = _auto_stop(active, now)
-        ev = StoppedEvent(task_id=active.uuid, ts=now, duration_s=ev.duration_s, note=note)
-        return [ev], f'Stopped "{active.description}".'
+        return [_auto_stop(active, now, note)], f'Stopped "{active.description}".'
 
     matched, err = _match_ids(tasks, filter_args, "stopped")
     if err:
@@ -440,6 +438,15 @@ def delete_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
     return events, f"Deleted {_fmt(matched)}."
 
 
+def _parse_date_prop(raw: str | None) -> tuple[datetime | None, str]:
+    if raw is None:
+        return None, ""
+    try:
+        return parse_date(raw), ""
+    except ValueError as e:
+        return None, str(e)
+
+
 def _compute_changes(
     task: Task,
     modify_args: ParsedModification,
@@ -498,26 +505,16 @@ def _compute_changes(
             changes["depends"] = FieldChange(before=list(task.depends), after=new_deps)
 
     if "due" in modify_args.properties:
-        raw_due = modify_args.properties["due"]
-        if raw_due is None:
-            new_due: datetime | None = None
-        else:
-            try:
-                new_due = parse_date(raw_due)
-            except ValueError as e:
-                return {}, str(e)
+        new_due, err = _parse_date_prop(modify_args.properties["due"])
+        if err:
+            return {}, err
         if new_due != task.due:
             changes["due"] = FieldChange(before=task.due, after=new_due)
 
     if "wait" in modify_args.properties:
-        raw_wait = modify_args.properties["wait"]
-        if raw_wait is None:
-            new_wait: datetime | None = None
-        else:
-            try:
-                new_wait = parse_date(raw_wait)
-            except ValueError as e:
-                return {}, str(e)
+        new_wait, err = _parse_date_prop(modify_args.properties["wait"])
+        if err:
+            return {}, err
         if new_wait != task.wait:
             changes["wait"] = FieldChange(before=task.wait, after=new_wait)
         if new_wait is not None and new_wait > datetime.now() and task.status == "pending":
@@ -980,6 +977,15 @@ def recap_(
     return [], f"Wrote {out_path}"
 
 
+def _render_count_table(counts: dict[str, int], col_name: str) -> None:
+    table = Table(show_header=True)
+    table.add_column(col_name)
+    table.add_column("Count", justify="right")
+    for key, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+        table.add_row(key, str(count))
+    Console().print(table)
+
+
 def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """List tags in use.
 
@@ -991,17 +997,12 @@ def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
     counts: dict[str, int] = {}
     for task in active:
         for tag in task.tags:
-            counts[tag] = counts.get(tag, 0) + 1
+            counts[f"+{tag}"] = counts.get(f"+{tag}", 0) + 1
 
     if not counts:
         return [], "No tags in use."
 
-    table = Table(show_header=True)
-    table.add_column("Tag")
-    table.add_column("Count", justify="right")
-    for tag, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
-        table.add_row(f"+{tag}", str(count))
-    Console().print(table)
+    _render_count_table(counts, "Tag")
     return [], ""
 
 
@@ -1015,19 +1016,13 @@ def projects_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedM
     active = [t for t in tasks if t.status in ("pending", "waiting")]
     counts: dict[str, int] = {}
     for task in active:
-        proj = task.properties.get("project")
-        if proj:
+        if proj := task.properties.get("project"):
             counts[proj] = counts.get(proj, 0) + 1
 
     if not counts:
         return [], "No projects in use."
 
-    table = Table(show_header=True)
-    table.add_column("Project")
-    table.add_column("Count", justify="right")
-    for proj, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
-        table.add_row(proj, str(count))
-    Console().print(table)
+    _render_count_table(counts, "Project")
     return [], ""
 
 
