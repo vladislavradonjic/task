@@ -39,6 +39,8 @@ def _init_context_dir(ctx: Path) -> None:
     (ctx / "events.jsonl").touch()
     (ctx / "tasks.json").write_text("[]")
     (ctx / "recaps").mkdir(exist_ok=True)
+    (ctx / ".gitattributes").write_text("events.jsonl merge=union\n")
+    (ctx / ".gitignore").write_text("tasks.json\n")
 
 
 def _match_ids(tasks: list[Task], filter_args: ParsedFilter, verb: str) -> tuple[list[Task], str]:

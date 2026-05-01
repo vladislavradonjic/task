@@ -4,7 +4,9 @@ Personal [taskwarrior](https://taskwarrior.org/) clone in Python, primarily for 
 
 ## Status
 
-Early scaffolding. The CLI splits arguments into filter / command / modify sections and dispatches to named command stubs, but no command performs real work yet. Argument parsing — recognizing tags, properties, IDs, and descriptions — is the active focus.
+Feature-complete for personal use. Commands: `add`, `list`, `done`, `delete`,
+`modify`, `query`, `context`, `start`/`stop`/`log`, `today`, `week`, `recap`,
+`undo`, `help`.
 
 ## Requirements
 
@@ -19,6 +21,29 @@ Early scaffolding. The CLI splits arguments into filter / command / modify secti
 
     uv run task <args>
 
-Example (currently just echoes the parsed argv sections):
+## Sync
 
-    uv run task add Buy milk +groceries
+Sync is git-based, manual. The runtime never invokes git — you pull before working
+and push after.
+
+**Setup** (per context you want to sync):
+
+    git -C <data_dir>/work init
+    git -C <data_dir>/work remote add origin <remote>
+
+`task context create` writes `.gitattributes` (`events.jsonl merge=union`) and
+`.gitignore` (`tasks.json`) automatically. For an existing context, add them manually.
+
+**Workflow:**
+
+    git -C <data_dir>/work pull          # before starting work
+    task add Fix parser bug              # appends to events.jsonl
+    git -C <data_dir>/work add -A
+    git -C <data_dir>/work commit -m "snapshot"
+    git -C <data_dir>/work push
+
+`merge=union` resolves concurrent edits to `events.jsonl` by keeping all appended
+lines. The runtime sorts events by timestamp on load, so line order doesn't matter.
+
+Don't sync `state.json` or `config.toml` — active context and user prefs are
+per-machine.
