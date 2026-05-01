@@ -15,11 +15,18 @@ Feature-complete for personal use. Commands: `add`, `list`, `done`, `delete`,
 
 ## Install
 
+**For development:**
+
     uv sync
-
-## Run
-
     uv run tsk <args>
+
+**To install on a machine** (puts `tsk` in PATH):
+
+    uv build                                        # produces dist/task-1.0.0-py3-none-any.whl
+    scp dist/task-*.whl user@machine:~             # or USB, shared drive, etc.
+    uv tool install ~/task-1.0.0-py3-none-any.whl  # on target machine
+
+To update: rebuild, copy, and reinstall with `--force`.
 
 ## Sync
 

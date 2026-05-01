@@ -1,6 +1,6 @@
 [project]
 name = "task"
-version = "0.1.0"
+version = "1.0.0"
 description = "Personal task warrior clone for use on Windows"
 readme = "README.md"
 authors = [
