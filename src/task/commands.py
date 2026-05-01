@@ -94,7 +94,7 @@ def _apply_dep_changes(
 def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Add a new task.
 
-    Usage: task add <description> [+tag] [-tag] [property:value]
+    Usage: tsk add <description> [+tag] [-tag] [property:value]
     """
     tags = [t.lstrip("+") for t in modify_args.tags if t.startswith("+")]
 
@@ -188,7 +188,7 @@ def _project_match(task_project: str | None, prefix: str) -> bool:
 def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """List tasks.
 
-    Usage: task [filter] list [status:pending|waiting|done] [project:<prefix>]
+    Usage: tsk [filter] list [status:pending|waiting|done] [project:<prefix>]
 
     Shows pending always; waiting only when fewer than 10 pending exist.
     project:work matches work and any work.* subtree.
@@ -215,7 +215,7 @@ def list_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
 def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Filter tasks with a polars expression.
 
-    Usage: task query "<expression>"
+    Usage: tsk query "<expression>"
 
     Example: task query "col('priority') == 'H'"
     Use & and | (not 'and'/'or') for boolean logic.
@@ -224,7 +224,7 @@ def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
     """
     expr_str = modify_args.description.strip()
     if not expr_str:
-        return [], 'No expression given. Usage: task query "<polars-expression>"'
+        return [], 'No expression given. Usage: tsk query "<polars-expression>"'
 
     all_prop_keys: set[str] = set()
     for t in tasks:
@@ -284,7 +284,7 @@ def _auto_stop(task: Task, now: datetime, note: str = "") -> StoppedEvent:
 def start_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Start time tracking on a task.
 
-    Usage: task <id> start [note]
+    Usage: tsk <id> start [note]
 
     Only pending tasks are startable. Any currently active task is stopped first.
     """
@@ -314,7 +314,7 @@ def start_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
 def stop_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Stop time tracking on the active task.
 
-    Usage: task [<id>] stop [note]
+    Usage: tsk [<id>] stop [note]
 
     Bare form (no id) targets the currently active task.
     """
@@ -347,7 +347,7 @@ def stop_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
 def log_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Manually log a time session.
 
-    Usage: task <id> log <duration> [at:<end-time>] [note]
+    Usage: tsk <id> log <duration> [at:<end-time>] [note]
 
     Duration forms: 2h, 30min, 1h30m. at: defaults to now. Future end times refused.
     Emits a started/stopped pair without affecting the task's active state.
@@ -363,7 +363,7 @@ def log_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModifi
 
     parts = modify_args.description.strip().split()
     if not parts:
-        return [], 'No duration given. Usage: task <id> log <duration> [at:<when>] [note]'
+        return [], 'No duration given. Usage: tsk <id> log <duration> [at:<when>] [note]'
     try:
         duration_s = parse_duration_seconds(parts[0])
     except ValueError as e:
@@ -401,7 +401,7 @@ def _fmt(tasks: list[Task]) -> str:
 def done_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Mark tasks done.
 
-    Usage: task <id> done
+    Usage: tsk <id> done
 
     Refuses on waiting tasks — clear wait: first.
     """
@@ -424,7 +424,7 @@ def done_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
 def delete_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Delete tasks.
 
-    Usage: task <id> delete
+    Usage: tsk <id> delete
     """
     matched, err = _match_ids(tasks, filter_args, "deleted")
     if err:
@@ -528,7 +528,7 @@ def _compute_changes(
 def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Modify task fields.
 
-    Usage: task <id> modify [description] [+tag] [-tag] [property:value] [property:]
+    Usage: tsk <id> modify [description] [+tag] [-tag] [property:value] [property:]
 
     Use property: (empty value) to clear a field.
     """
@@ -550,7 +550,7 @@ def modify_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
 def depends_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Add or remove task dependencies.
 
-    Usage: task <id> depends <id>[,<id>...] | -<id>
+    Usage: tsk <id> depends <id>[,<id>...] | -<id>
 
     Unsigned or +-prefixed IDs are added; --prefixed IDs are removed.
     Adding a duplicate or self-reference is a no-op. Cycles are rejected.
@@ -597,7 +597,7 @@ def depends_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMo
 def blocks_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Add or remove blocking relationships.
 
-    Usage: task <id> blocks <id>[,<id>...]
+    Usage: tsk <id> blocks <id>[,<id>...]
 
     'task A blocks B' means B depends on A. Prefix IDs with - to remove.
     """
@@ -653,7 +653,7 @@ def blocks_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
 def undo_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Undo the last action.
 
-    Usage: task undo
+    Usage: tsk undo
 
     Walks the event log backward and reverses the most recent change.
     """
@@ -691,9 +691,9 @@ def _ctx_list(d: Path) -> str:
 
 def _ctx_use(d: Path, name: str | None) -> str:
     if name is None:
-        return "Usage: task context use <name>"
+        return "Usage: tsk context use <name>"
     if not (d / name / "meta.json").exists():
-        return f"Context '{name}' does not exist. Run `task context list`."
+        return f"Context '{name}' does not exist. Run `tsk context list`."
     state_file = d / "state.json"
     state = _read_state(d)
     state["active"] = name
@@ -703,7 +703,7 @@ def _ctx_use(d: Path, name: str | None) -> str:
 
 def _ctx_create(d: Path, name: str | None) -> str:
     if name is None:
-        return "Usage: task context create <name>"
+        return "Usage: tsk context create <name>"
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
         return f"Invalid context name: {name!r}. Must start with a letter; letters, digits, underscores, hyphens only."
     ctx = d / name
@@ -715,10 +715,10 @@ def _ctx_create(d: Path, name: str | None) -> str:
 
 def _ctx_delete(d: Path, name: str | None) -> str:
     if name is None:
-        return "Usage: task context delete <name>"
+        return "Usage: tsk context delete <name>"
     active = _read_state(d)["active"]
     if name == active:
-        return f"Cannot delete the active context '{name}'. Switch first with `task context use <other>`."
+        return f"Cannot delete the active context '{name}'. Switch first with `tsk context use <other>`."
     ctx = d / name
     if not (ctx / "meta.json").exists():
         return f"Context '{name}' does not exist."
@@ -734,7 +734,7 @@ def _ctx_delete(d: Path, name: str | None) -> str:
 def help_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Show help.
 
-    Usage: task help [command]
+    Usage: tsk help [command]
 
     Bare form lists all commands. With a command name, shows its full description.
     """
@@ -758,7 +758,7 @@ def help_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
 def context_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Manage contexts.
 
-    Usage: task context [list|use <name>|create <name>|delete <name>]
+    Usage: tsk context [list|use <name>|create <name>|delete <name>]
 
     Bare form shows the active context.
     """
@@ -832,7 +832,7 @@ def _tag_list_cmd(
 def today_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Manage the daily list.
 
-    Usage: task [<ids>] today [clear]
+    Usage: tsk [<ids>] today [clear]
 
     Bare: list tasks tagged +today. With IDs: add +today. 'clear': remove +today from all.
     """
@@ -842,7 +842,7 @@ def today_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
 def week_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Manage the weekly list.
 
-    Usage: task [<ids>] week [clear]
+    Usage: tsk [<ids>] week [clear]
 
     Bare: list tasks tagged +week. With IDs: add +week. 'clear': remove +week from all.
     """
@@ -907,14 +907,14 @@ def recap_(
 ) -> tuple[list[Event], str]:
     """Generate a recap document.
 
-    Usage: task recap day|week|month
+    Usage: tsk recap day|week|month
 
     Writes a markdown summary of what was planned and what got done.
     Prompts before overwriting an existing file (default: No).
     """
     period = modify_args.description.strip().lower()
     if period not in ("day", "week", "month"):
-        return [], "Usage: task recap day|week|month"
+        return [], "Usage: tsk recap day|week|month"
 
     now = datetime.now()
     today = now.date()
@@ -989,7 +989,7 @@ def _render_count_table(counts: dict[str, int], col_name: str) -> None:
 def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """List tags in use.
 
-    Usage: task tags
+    Usage: tsk tags
 
     Shows each tag and how many pending/waiting tasks carry it, sorted by count.
     """
@@ -1009,7 +1009,7 @@ def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
 def projects_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """List projects in use.
 
-    Usage: task projects
+    Usage: tsk projects
 
     Shows each project and how many pending/waiting tasks are assigned to it, sorted by count.
     """
@@ -1029,7 +1029,7 @@ def projects_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedM
 def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
     """Initialize the task store.
 
-    Usage: task init
+    Usage: tsk init
 
     Creates the data directory and default context.
     """

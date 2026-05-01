@@ -89,7 +89,7 @@ def main() -> None:
     d = storage.data_dir()
     state_file = d / "state.json"
     if not state_file.exists():
-        print("Not initialized. Run `task init` first.", file=sys.stderr)
+        print("Not initialized. Run `tsk init` first.", file=sys.stderr)
         sys.exit(2)
 
     state = json.loads(state_file.read_text())
@@ -111,7 +111,7 @@ def main() -> None:
     context = storage.active_context(d)
     meta_file = context / "meta.json"
     if not meta_file.exists():
-        print(f"Context {context.name} not initialized. Run `task context list`.", file=sys.stderr)
+        print(f"Context {context.name} not initialized. Run `tsk context list`.", file=sys.stderr)
         sys.exit(1)
 
     meta = json.loads(meta_file.read_text())
