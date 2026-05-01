@@ -19,7 +19,7 @@ Feature-complete for personal use. Commands: `add`, `list`, `done`, `delete`,
 
 ## Run
 
-    uv run task <args>
+    uv run tsk <args>
 
 ## Sync
 
@@ -31,13 +31,13 @@ and push after.
     git -C <data_dir>/work init
     git -C <data_dir>/work remote add origin <remote>
 
-`task context create` writes `.gitattributes` (`events.jsonl merge=union`) and
+`tsk context create` writes `.gitattributes` (`events.jsonl merge=union`) and
 `.gitignore` (`tasks.json`) automatically. For an existing context, add them manually.
 
 **Workflow:**
 
     git -C <data_dir>/work pull          # before starting work
-    task add Fix parser bug              # appends to events.jsonl
+    tsk add Fix parser bug               # appends to events.jsonl
     git -C <data_dir>/work add -A
     git -C <data_dir>/work commit -m "snapshot"
     git -C <data_dir>/work push
