@@ -127,11 +127,29 @@ def add_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModifi
     return [event], f"Created task {task.uuid}"
 
 
+def _fmt_interval(seconds: float, past: bool = False) -> str:
+    if seconds < 60:
+        s = f"{int(seconds)}s"
+    elif seconds < 3600:
+        s = f"{int(seconds // 60)}m"
+    elif seconds < 86400:
+        s = f"{int(seconds // 3600)}h"
+    elif seconds < 365 * 86400:
+        s = f"{int(seconds // 86400)}d"
+    else:
+        s = f"{int(seconds // (365 * 86400))}y"
+    return f"{s} ago" if past else s
+
+
 def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
+    from rich import box as _box
+    now = datetime.now()
     urgency_scores = compute_urgency(all_tasks)
     visible = sorted(visible, key=lambda t: (-urgency_scores.get(t.uuid, 0.0), t.entry))
 
     show_tags = any(t.tags for t in visible)
+    show_priority = any("priority" in t.properties for t in visible)
+    show_due = any(t.due is not None for t in visible)
     show_project = any("project" in t.properties for t in visible)
     show_urgency = any(urgency_scores.get(t.uuid, 0.0) != 0.0 for t in visible)
     has_flags = any(
@@ -139,15 +157,20 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
         for t in visible
     )
 
-    table = Table(show_header=True)
+    table = Table(show_header=True, box=_box.SIMPLE_HEAD)
     table.add_column("ID", style="bold", overflow="ellipsis")
     table.add_column("Description", overflow="fold")
     if show_tags:
         table.add_column("Tags", overflow="ellipsis")
+    if show_priority:
+        table.add_column("Pri", overflow="ellipsis")
+    if show_due:
+        table.add_column("Due", overflow="ellipsis")
     if show_project:
         table.add_column("Project", overflow="ellipsis")
     if show_urgency:
         table.add_column("Urgency", overflow="ellipsis")
+    table.add_column("Age", overflow="ellipsis")
 
     active_uuids = {t.uuid for t in all_tasks if t.status in ("pending", "waiting")}
     blocked_uuids = {t.uuid for t in visible if any(dep in active_uuids for dep in t.depends)}
@@ -170,10 +193,20 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
         row = [id_cell, task.description]
         if show_tags:
             row.append(" ".join(f"+{t}" for t in task.tags))
+        if show_priority:
+            row.append(task.properties.get("priority", ""))
+        if show_due:
+            if task.due is not None:
+                diff = (task.due.replace(tzinfo=None) - now).total_seconds()
+                row.append(_fmt_interval(-diff, past=True) if diff < 0 else _fmt_interval(diff))
+            else:
+                row.append("")
         if show_project:
             row.append(task.properties.get("project", ""))
         if show_urgency:
             row.append(f"{urgency_scores.get(task.uuid, 0.0):.1f}")
+        age_s = max(0.0, (now - task.entry.replace(tzinfo=None)).total_seconds())
+        row.append(_fmt_interval(age_s, past=True))
         table.add_row(*row, style="dim" if task.uuid in blocked_uuids else None)
 
     Console().print(table)
