@@ -147,7 +147,8 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
     urgency_scores = compute_urgency(all_tasks)
     visible = sorted(visible, key=lambda t: (-urgency_scores.get(t.uuid, 0.0), t.entry))
 
-    show_tags = any(t.tags for t in visible)
+    _RESERVED_TAGS = {"today", "week"}
+    show_tags = any(tag for t in visible for tag in t.tags if tag not in _RESERVED_TAGS)
     show_priority = any("priority" in t.properties for t in visible)
     show_due = any(t.due is not None for t in visible)
     show_project = any("project" in t.properties for t in visible)
@@ -192,7 +193,7 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
             id_cell = id_str
         row = [id_cell, task.description]
         if show_tags:
-            row.append(" ".join(f"+{t}" for t in task.tags))
+            row.append(" ".join(f"+{t}" for t in task.tags if t not in _RESERVED_TAGS))
         if show_priority:
             row.append(task.properties.get("priority", ""))
         if show_due:
