@@ -3,6 +3,7 @@ import sys
 import json
 from datetime import datetime, timedelta
 
+from rich.console import Console
 from task import commands, storage
 from task.config import load_config
 from task.events import apply_event
@@ -62,7 +63,10 @@ def _load_and_prep(context, cfg) -> list:
     return tasks
 
 
-def _render_default_list(tasks: list) -> None:
+def _render_default_list(tasks: list, message: str = "") -> None:
+    Console().clear()
+    if message:
+        print(message)
     _, msg = commands.list_(tasks, parse_filter([]), parse_modification([]))
     if msg:
         print(msg)
@@ -123,10 +127,8 @@ def _repl_loop(cfg, context) -> None:
 
             elif command == "undo":
                 _, message = fn(parsed_filter, parsed_modification)
-                if message:
-                    print(message)
                 tasks = _load_and_prep(context, cfg)
-                _render_default_list(tasks)
+                _render_default_list(tasks, message)
 
             elif command == "recap":
                 tasks = _load_and_prep(context, cfg)
@@ -142,11 +144,10 @@ def _repl_loop(cfg, context) -> None:
                     tasks = apply_event(tasks, event)
                 if events:
                     storage.save_snapshot(context, tasks)
-                if message:
-                    print(message)
-                if events:
                     tasks = _load_and_prep(context, cfg)
-                    _render_default_list(tasks)
+                    _render_default_list(tasks, message)
+                elif message:
+                    print(message)
 
         except Exception as e:
             print(str(e), file=sys.stderr)
