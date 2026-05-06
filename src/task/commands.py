@@ -195,11 +195,18 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
         if show_tags:
             row.append(" ".join(f"+{t}" for t in task.tags if t not in _RESERVED_TAGS))
         if show_priority:
-            row.append(task.properties.get("priority", ""))
+            pri = task.properties.get("priority", "")
+            if pri == "H":
+                row.append("[red]H[/red]")
+            elif pri == "M":
+                row.append("[yellow]M[/yellow]")
+            else:
+                row.append(pri)
         if show_due:
             if task.due is not None:
                 diff = (task.due.replace(tzinfo=None) - now).total_seconds()
-                row.append(_fmt_interval(-diff, past=True) if diff < 0 else _fmt_interval(diff))
+                due_str = _fmt_interval(-diff, past=True) if diff < 0 else _fmt_interval(diff)
+                row.append(f"[red]{due_str}[/red]" if diff < 0 else due_str)
             else:
                 row.append("")
         if show_project:
@@ -208,7 +215,13 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
             row.append(f"{urgency_scores.get(task.uuid, 0.0):.1f}")
         age_s = max(0.0, (now - task.entry.replace(tzinfo=None)).total_seconds())
         row.append(_fmt_interval(age_s, past=True))
-        table.add_row(*row, style="dim" if task.uuid in blocked_uuids else None)
+        if task.start is not None:
+            row_style = "bold"
+        elif task.uuid in blocked_uuids or task.status == "waiting":
+            row_style = "dim"
+        else:
+            row_style = None
+        table.add_row(*row, style=row_style)
 
     Console().print(table)
 
