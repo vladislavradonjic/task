@@ -1,3 +1,4 @@
+import shlex
 import sys
 import json
 from datetime import datetime, timedelta
@@ -47,6 +48,108 @@ def _handle_stale_session(tasks: list, context, threshold_hours: float) -> None:
         storage.append_event(context, event)
         apply_event(tasks, event)
     # "k" or anything else: keep
+
+
+def _load_and_prep(context, cfg) -> list:
+    tasks = storage.load_tasks(context)
+    transitions = storage.lazy_wait_transitions(tasks)
+    for event in transitions:
+        storage.append_event(context, event)
+        tasks = apply_event(tasks, event)
+    if transitions:
+        storage.save_snapshot(context, tasks)
+    storage.assign_display_ids(tasks)
+    return tasks
+
+
+def _render_default_list(tasks: list) -> None:
+    _, msg = commands.list_(tasks, parse_filter([]), parse_modification([]))
+    if msg:
+        print(msg)
+
+
+def _repl_loop(cfg, context) -> None:
+    known = commands.command_names() - {"run"}
+
+    tasks = storage.load_tasks(context)
+    _handle_stale_session(tasks, context, cfg.time_tracking.stale_threshold_hours)
+    tasks = _load_and_prep(context, cfg)
+    _render_default_list(tasks)
+
+    while True:
+        try:
+            line = input("tsk> ").strip()
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt:
+            print()
+            continue
+
+        if not line:
+            continue
+        if line == "exit":
+            break
+
+        try:
+            args = shlex.split(line)
+        except ValueError as e:
+            print(f"Parse error: {e}", file=sys.stderr)
+            continue
+
+        filter_args_raw: list[str] = []
+        command: str | None = None
+        modify_args_raw: list[str] = []
+        for i, token in enumerate(args):
+            if token in known:
+                filter_args_raw = args[:i]
+                command = token
+                modify_args_raw = args[i + 1:]
+                break
+
+        if command is None:
+            print(f"Unknown command: {args[0]!r}. Type 'help' for available commands.", file=sys.stderr)
+            continue
+
+        try:
+            parsed_filter = parse_filter(filter_args_raw)
+            parsed_modification = parse_modification(modify_args_raw)
+            fn = getattr(commands, f"{command}_")
+
+            if command in ("init", "help", "context"):
+                _, message = fn(parsed_filter, parsed_modification)
+                if message:
+                    print(message)
+
+            elif command == "undo":
+                _, message = fn(parsed_filter, parsed_modification)
+                if message:
+                    print(message)
+                tasks = _load_and_prep(context, cfg)
+                _render_default_list(tasks)
+
+            elif command == "recap":
+                tasks = _load_and_prep(context, cfg)
+                _, message = fn(tasks, parsed_filter, parsed_modification, context=context, cfg=cfg)
+                if message:
+                    print(message)
+
+            else:
+                tasks = _load_and_prep(context, cfg)
+                events, message = fn(tasks, parsed_filter, parsed_modification)
+                for event in events:
+                    storage.append_event(context, event)
+                    tasks = apply_event(tasks, event)
+                if events:
+                    storage.save_snapshot(context, tasks)
+                if message:
+                    print(message)
+                if events:
+                    tasks = _load_and_prep(context, cfg)
+                    _render_default_list(tasks)
+
+        except Exception as e:
+            print(str(e), file=sys.stderr)
 
 
 def main() -> None:
@@ -127,6 +230,10 @@ def main() -> None:
         _, message = fn(parsed_filter, parsed_modification)
         if message:
             print(message)
+        return
+
+    if command == "run":
+        _repl_loop(cfg, context)
         return
 
     tasks = storage.load_tasks(context)

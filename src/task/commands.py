@@ -1074,3 +1074,14 @@ def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
     state_file.write_text(json.dumps({"version": 1, "active": "default"}, indent=2))
     _init_context_dir(d / "default")
     return [], f"Initialized at {d}"
+
+
+def run_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Start the interactive REPL.
+
+    Usage: tsk run
+
+    Enters an interactive session. Type commands without the leading 'tsk'.
+    Type 'exit' or press Ctrl+D to quit. Ctrl+C cancels the current input line.
+    """
+    return [], ""
