@@ -267,7 +267,7 @@ def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
 
     Example: task query "col('priority') == 'H'"
     Use & and | (not 'and'/'or') for boolean logic.
-    Available columns: uuid, id, description, status, tags, entry, due, wait, end, start,
+    Available columns: uuid, id, description, status, tags, entry, due, wait, end,
     plus any property names such as priority and project.
     """
     expr_str = modify_args.description.strip()
@@ -1391,19 +1391,24 @@ def day_(
 
 
 def rebuild_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
-    """Rebuild the task cache from the event log.
+    """Rebuild the caches from the event log.
 
     Usage: tsk rebuild
 
-    events.jsonl is canonical and tasks.json is only a cache. Use this if the
-    cache is stale or was damaged; nothing is lost by running it.
+    events.jsonl is canonical; tasks.json and entries.json are only caches. Use this
+    if either is stale or was damaged; nothing is lost by running it.
     """
     d = get_data_dir()
     ctx = active_context(d)
     tasks = rebuild_tasks(ctx)
     assign_display_ids(tasks)
     save_snapshot(ctx, tasks)
-    return [], f"Rebuilt {len(tasks)} task(s) from {ctx / 'events.jsonl'}."
+    entries = rebuild_entries(ctx)
+    save_entries_snapshot(ctx, entries)
+    return [], (
+        f"Rebuilt {len(tasks)} task(s) and {len(entries)} timesheet row(s) "
+        f"from {ctx / 'events.jsonl'}."
+    )
 
 
 def run_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
@@ -1412,6 +1417,8 @@ def run_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[li
     Usage: tsk run
 
     Enters an interactive session. Type commands without the leading 'tsk'.
-    Type 'exit' or press Ctrl+D to quit. Ctrl+C cancels the current input line.
+    Shows the task list with today's timesheet beneath it, re-rendered after each
+    change. Type 'exit' or 'quit', or press Ctrl+D, to leave; Ctrl+C cancels the
+    current input line.
     """
     return [], ""

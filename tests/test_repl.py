@@ -311,6 +311,27 @@ def test_corrupt_cache_does_not_crash_the_cli(tmp_data_dir, monkeypatch, capsys)
 # rebuild
 # ---------------------------------------------------------------------------
 
+def test_rebuild_restores_the_timesheet_cache_too(tmp_data_dir, monkeypatch):
+    """rebuild is the documented recovery path, so it must cover both caches."""
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["log standup kind:meeting from:6:00 til:6:30"])
+    cli._repl_loop(tmp_data_dir)
+    context = tmp_data_dir / "default"
+    (context / "entries.json").unlink()
+
+    _, message = commands.rebuild_(ParsedFilter(), ParsedModification())
+    assert (context / "entries.json").exists()
+    assert "1 timesheet row" in message
+
+
+def test_rebuild_reports_both_counts(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    monkeypatch.setattr("sys.argv", ["tsk", "add", "a task"])
+    cli.main()
+    _, message = commands.rebuild_(ParsedFilter(), ParsedModification())
+    assert "1 task(s)" in message and "0 timesheet row(s)" in message
+
+
 def test_rebuild_restores_the_cache_from_the_log(tmp_data_dir, monkeypatch):
     _init(tmp_data_dir)
     monkeypatch.setattr("sys.argv", ["tsk", "add", "from the log"])

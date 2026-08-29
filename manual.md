@@ -407,8 +407,7 @@ Unknown keys are ignored.
 any time — a missing or corrupt one is detected on read and rebuilt automatically, so
 nothing is lost either way.
 
-`tsk rebuild` forces a rebuild of `tasks.json` by hand. It does **not** touch
-`entries.json`, which currently only repairs itself on the next read.
+`tsk rebuild` forces a rebuild of both caches by hand and reports what it found.
 
 Everything is written as UTF-8 with Unix line endings, so `č`, `ć`, and `đ` survive on
 Windows, where the platform default encoding would refuse them.
