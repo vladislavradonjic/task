@@ -11,6 +11,7 @@ import pytest
 
 from task import commands
 from task.commands import _entry_delete, _entry_modify, day_, log_
+from task.config import Config, Shortcut, TimesheetConfig
 from task.models import (
     Entry,
     EntryDeletedEvent,
@@ -292,12 +293,16 @@ def at_1100(monkeypatch):
     return _at(11, 0)
 
 
+def _cfg(**timesheet):
+    return Config(timesheet=TimesheetConfig(**timesheet))
+
+
 def _mod(description="", **props):
     return ParsedModification(description=description, properties=props)
 
 
-def _log(entries, tasks=None, description="", **props):
-    return log_(entries, tasks or [], ParsedFilter(), _mod(description, **props))
+def _log(entries, tasks=None, description="", cfg=None, **props):
+    return log_(entries, tasks or [], ParsedFilter(), _mod(description, **props), cfg or _cfg())
 
 
 def test_log_emits_one_logged_event(at_1100):
@@ -356,7 +361,7 @@ def test_log_requires_a_kind(at_1100):
 
 
 def test_log_refuses_tags(at_1100):
-    events, message = log_([], [], ParsedFilter(), ParsedModification(description="x", tags=["+bug"]))
+    events, message = log_([], [], ParsedFilter(), ParsedModification(description="x", tags=["+bug"]), _cfg())
     assert events == [] and "Tags are not valid" in message
 
 
@@ -420,12 +425,12 @@ def test_log_resolves_a_clock_time_across_midnight(monkeypatch):
 # --- day_ ---
 
 def test_day_reports_an_empty_day(at_1100):
-    events, message = day_([], [], ParsedFilter(), _mod())
+    events, message = day_([], [], ParsedFilter(), _mod(), _cfg())
     assert events == [] and "Nothing logged" in message
 
 
 def test_day_renders_rows_with_times_kinds_and_totals(at_1100, capsys):
-    day_(_a_day(), [], ParsedFilter(), _mod())
+    day_(_a_day(), [], ParsedFilter(), _mod(), _cfg())
     out = capsys.readouterr().out
     assert "09:00" in out and "09:30" in out
     assert "meeting" in out and "junk" in out
@@ -435,17 +440,17 @@ def test_day_renders_rows_with_times_kinds_and_totals(at_1100, capsys):
 
 def test_day_assigns_letters_in_timeline_order(at_1100):
     entries = _a_day()
-    day_(entries, [], ParsedFilter(), _mod())
+    day_(entries, [], ParsedFilter(), _mod(), _cfg())
     assert [e.id for e in entries] == ["a", "b", "c", "d", "e"]
 
 
 def test_day_accepts_an_explicit_date(at_1100, capsys):
-    day_(_a_day(), [], ParsedFilter(), _mod("2026-08-29"))
+    day_(_a_day(), [], ParsedFilter(), _mod("2026-08-29"), _cfg())
     assert "Saturday 29 Aug" in capsys.readouterr().out
 
 
 def test_day_with_an_explicit_date_that_has_no_rows(at_1100):
-    events, message = day_(_a_day(), [], ParsedFilter(), _mod("2026-08-27"))
+    events, message = day_(_a_day(), [], ParsedFilter(), _mod("2026-08-27"), _cfg())
     assert events == [] and "Thursday 27 Aug" in message
 
 
@@ -453,12 +458,12 @@ def test_day_shows_the_task_link(at_1100, capsys):
     task = Task(description="write the parser")
     assign_display_ids([task])
     entries = [_e(from_=_at(9), til=_at(9, 30), task=task.uuid)]
-    day_(entries, [task], ParsedFilter(), _mod())
+    day_(entries, [task], ParsedFilter(), _mod(), _cfg())
     assert "→1" in capsys.readouterr().out
 
 
 def test_day_rejects_an_unparseable_date(at_1100):
-    events, message = day_([], [], ParsedFilter(), _mod("notadate"))
+    events, message = day_([], [], ParsedFilter(), _mod("notadate"), _cfg())
     assert events == [] and "notadate" in message
 
 
@@ -475,11 +480,12 @@ def _rows(*entries):
     return listed
 
 
-def _edit(entries, letters, tasks=None, description="", **props):
+def _edit(entries, letters, tasks=None, description="", cfg=None, **props):
     return _entry_modify(
         entries, tasks or [],
         ParsedFilter(letters=letters if isinstance(letters, list) else [letters]),
         _mod(description, **props),
+        cfg or _cfg(),
     )
 
 
@@ -487,7 +493,7 @@ def _rm(entries, letters, tasks=None):
     return _entry_delete(
         entries, tasks or [],
         ParsedFilter(letters=letters if isinstance(letters, list) else [letters]),
-        _mod(),
+        _mod(), _cfg(),
     )
 
 
@@ -580,7 +586,7 @@ def test_modify_refuses_more_than_one_row(at_1100):
 def test_modify_refuses_tags(at_1100):
     entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
     events, message = _entry_modify(
-        entries, [], ParsedFilter(letters=["a"]), ParsedModification(tags=["+x"]))
+        entries, [], ParsedFilter(letters=["a"]), ParsedModification(tags=["+x"]), _cfg())
     assert events == [] and "Tags are not valid" in message
 
 
@@ -653,3 +659,93 @@ def test_log_refuses_a_second_open_row(at_1100):
     entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(description="open one"))
     events, message = _log(entries, description="another", kind="solo", til=None, **{"from": "10:00"})
     assert events == [] and "already open" in message
+
+
+# ---------------------------------------------------------------------------
+# config: kinds vocabulary, shortcuts, day boundary (docs/config.md)
+# ---------------------------------------------------------------------------
+
+def test_unknown_kind_is_refused_with_the_valid_list(at_1100):
+    events, message = _log([], description="x", kind="meting", **{"from": "9:00"})
+    assert events == []
+    assert "meting" in message and "solo, chat, meeting, call, junk" in message
+
+
+def test_kinds_vocabulary_is_configurable(at_1100):
+    cfg = _cfg(kinds=["solo", "admin"])
+    events, _ = _log([], description="x", kind="admin", cfg=cfg, **{"from": "9:00"})
+    assert events[0].snapshot.kind == "admin"
+
+
+def test_a_kind_outside_the_configured_list_is_refused(at_1100):
+    cfg = _cfg(kinds=["solo", "admin"])
+    events, message = _log([], description="x", kind="meeting", cfg=cfg, **{"from": "9:00"})
+    assert events == [] and "Valid kinds: solo, admin" in message
+
+
+def test_modify_also_validates_the_kind(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, message = _edit(entries, "a", kind="nonsense")
+    assert events == [] and "Unknown kind" in message
+
+
+# --- shortcuts ---
+
+def _with_shortcuts():
+    return _cfg(shortcuts={
+        "standup": Shortcut(description="team standup", kind="meeting", project="internal"),
+        "mtg": Shortcut(kind="meeting"),
+    })
+
+
+def test_shortcut_supplies_every_field(at_1100):
+    events, _ = _log([], description="standup", cfg=_with_shortcuts(), **{"from": "9:00"})
+    entry = events[0].snapshot
+    assert (entry.description, entry.kind, entry.project) == ("team standup", "meeting", "internal")
+
+
+def test_shortcut_can_supply_only_a_kind(at_1100):
+    events, _ = _log([], description="mtg", project="acme", cfg=_with_shortcuts(), **{"from": "9:00"})
+    entry = events[0].snapshot
+    assert entry.kind == "meeting" and entry.project == "acme" and entry.description == ""
+
+
+def test_explicit_fields_beat_the_shortcut(at_1100):
+    events, _ = _log(
+        [], description="standup", kind="call", project="elsewhere",
+        cfg=_with_shortcuts(), **{"from": "9:00"},
+    )
+    entry = events[0].snapshot
+    assert entry.kind == "call" and entry.project == "elsewhere"
+
+
+def test_trailing_words_replace_the_shortcut_description(at_1100):
+    events, _ = _log([], description="standup about the parser",
+                     cfg=_with_shortcuts(), **{"from": "9:00"})
+    assert events[0].snapshot.description == "about the parser"
+
+
+def test_shortcut_is_only_recognised_as_the_first_word(at_1100):
+    events, message = _log([], description="about standup", cfg=_with_shortcuts(), **{"from": "9:00"})
+    assert events == [] and "No kind given" in message
+
+
+def test_an_unconfigured_word_is_not_a_shortcut(at_1100):
+    events, message = _log([], description="whatever", cfg=_with_shortcuts(), **{"from": "9:00"})
+    assert events == [] and "No kind given" in message
+
+
+# --- day boundary ---
+
+def test_day_boundary_is_honoured_by_log(at_1100):
+    """With a noon boundary, a 09:00 row belongs to the previous logical day."""
+    cfg = _cfg(day_starts_at=time(12, 0))
+    events, _ = _log([], description="x", kind="solo", cfg=cfg, **{"from": "9:00", "til": "9:30"})
+    rows = resolve([events[0].snapshot], day_starts_at=time(12, 0))
+    assert rows[0].day == date(2026, 8, 28)
+
+
+def test_day_boundary_is_honoured_by_the_day_view(at_1100, capsys):
+    cfg = _cfg(day_starts_at=time(12, 0))
+    day_(_a_day(), [], ParsedFilter(), _mod(), cfg)
+    assert "Friday 28 Aug" in capsys.readouterr().out

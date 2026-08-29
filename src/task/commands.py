@@ -971,6 +971,7 @@ def log_(
     tasks: list[Task],
     filter_args: ParsedFilter,
     modify_args: ParsedModification,
+    cfg,
 ) -> tuple[list[Event], str]:
     """Add a timesheet row.
 
@@ -979,9 +980,9 @@ def log_(
     The end defaults to now; the start is read from the previous row unless from: says
     otherwise. Times may be bare clock values (9:15) and resolve inside the current day.
     """
-    from task.timesheet import DEFAULT_DAY_STARTS_AT, logical_day, resolve
+    from task.timesheet import logical_day, resolve
 
-    day_starts_at = DEFAULT_DAY_STARTS_AT
+    day_starts_at = cfg.timesheet.day_starts_at
     now = datetime.now().replace(microsecond=0)
 
     if modify_args.tags:
@@ -990,9 +991,24 @@ def log_(
     if unknown:
         return [], f"Unknown propert{'y' if len(unknown) == 1 else 'ies'} on log: {', '.join(sorted(unknown))}."
 
+    description = modify_args.description.strip()
     kind = modify_args.properties.get("kind")
+    project = modify_args.properties.get("project")
+
+    # A shortcut is recognised only as the first description token, and only supplies
+    # defaults — anything given explicitly wins.
+    words = description.split()
+    if words and words[0] in cfg.timesheet.shortcuts:
+        shortcut = cfg.timesheet.shortcuts[words[0]]
+        rest = " ".join(words[1:])
+        description = rest or (shortcut.description or "")
+        kind = kind or shortcut.kind
+        project = project or shortcut.project
+
     if not kind:
         return [], "No kind given. Usage: tsk log <description> kind:<kind>"
+    if kind not in cfg.timesheet.kinds:
+        return [], f"Unknown kind {kind!r}. Valid kinds: {', '.join(cfg.timesheet.kinds)}."
 
     task_uuid = None
     raw_task = modify_args.properties.get("task")
@@ -1064,8 +1080,8 @@ def log_(
         from_=from_,
         til=til,
         kind=kind,
-        project=modify_args.properties.get("project"),
-        description=modify_args.description.strip(),
+        project=project,
+        description=description,
         task=task_uuid,
     )
     label = entry.description or f"{kind}{' on ' + entry.project if entry.project else ''}"
@@ -1097,15 +1113,14 @@ def _entry_modify(
     tasks: list[Task],
     filter_args: ParsedFilter,
     modify_args: ParsedModification,
+    cfg,
 ) -> tuple[list[Event], str]:
     """Change a timesheet row. Reached as `tsk <letter> modify ...`.
 
     An empty value clears a field, matching `modify wait:` on tasks — `til:` reopens a
     row, `from:` hands it back to the derivation chain.
     """
-    from task.timesheet import DEFAULT_DAY_STARTS_AT
-
-    day_starts_at = DEFAULT_DAY_STARTS_AT
+    day_starts_at = cfg.timesheet.day_starts_at
     now = datetime.now().replace(microsecond=0)
 
     if modify_args.tags:
@@ -1131,8 +1146,11 @@ def _entry_modify(
     for prop, field in (("kind", "kind"), ("project", "project")):
         if prop in modify_args.properties:
             after = modify_args.properties[prop] or None
-            if field == "kind" and not after:
-                return [], "kind cannot be cleared; every row needs one."
+            if field == "kind":
+                if not after:
+                    return [], "kind cannot be cleared; every row needs one."
+                if after not in cfg.timesheet.kinds:
+                    return [], f"Unknown kind {after!r}. Valid kinds: {', '.join(cfg.timesheet.kinds)}."
             if after != getattr(entry, field):
                 changes[field] = FieldChange(before=getattr(entry, field), after=after)
 
@@ -1185,6 +1203,7 @@ def _entry_delete(
     tasks: list[Task],
     filter_args: ParsedFilter,
     modify_args: ParsedModification,
+    cfg,
 ) -> tuple[list[Event], str]:
     """Remove timesheet rows. Reached as `tsk <letter> delete`.
 
@@ -1192,9 +1211,7 @@ def _entry_delete(
     because starts are derived. The day's *first* row has no predecessor to derive from,
     so its successor is promoted to an anchor at the deleted row's start.
     """
-    from task.timesheet import DEFAULT_DAY_STARTS_AT
-
-    rows = _today_rows(entries, DEFAULT_DAY_STARTS_AT)
+    rows = _today_rows(entries, cfg.timesheet.day_starts_at)
     matched, err = _match_letters(rows, filter_args, "deleted")
     if err:
         return [], err
@@ -1293,6 +1310,7 @@ def day_(
     tasks: list[Task],
     filter_args: ParsedFilter,
     modify_args: ParsedModification,
+    cfg,
 ) -> tuple[list[Event], str]:
     """Show the timesheet for a logical day.
 
@@ -1301,9 +1319,9 @@ def day_(
     Bare form shows today. A day runs from 04:00 to 04:00, so work past midnight stays
     with the evening it belongs to.
     """
-    from task.timesheet import DEFAULT_DAY_STARTS_AT, logical_day, resolve_day
+    from task.timesheet import logical_day, resolve_day
 
-    day_starts_at = DEFAULT_DAY_STARTS_AT
+    day_starts_at = cfg.timesheet.day_starts_at
     raw = modify_args.description.strip()
     if raw:
         # An explicit argument names a calendar date, and we show that date's logical day.

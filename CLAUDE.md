@@ -57,7 +57,7 @@ Commands: `add`, `list`, `query`, `modify`, `done`, `delete`, `depends`, `blocks
 tracking was removed in v1.4.
 
 **Two command signature families.** Task commands take `(tasks, filter, modify)`; timesheet
-commands take `(entries, tasks, filter, modify)`. Both are pure. The shell routes the shared
+commands take `(entries, tasks, filter, modify, cfg)`. Both are pure. The shell routes the shared
 names `modify`/`delete` on whether the filter carries letters (rows) or digits (tasks);
 `_entry_modify`/`_entry_delete` lead with an underscore so `command_names()` skips them.
 
