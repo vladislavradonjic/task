@@ -11,7 +11,7 @@ from uuid import UUID
 
 from rich.console import Console
 from rich.table import Table
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, Entry, FieldChange, LoggedEvent, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, Entry, EntryDeletedEvent, EntryUpdatedEvent, FieldChange, LoggedEvent, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
 from task.storage import active_context, append_event, assign_display_ids, assign_display_letters, data_dir as get_data_dir, effective_events, load_events, rebuild_entries, rebuild_tasks, save_entries_snapshot, save_snapshot
 from task.dates import parse_date, parse_duration_seconds
 from task.urgency import compute_urgency
@@ -1027,23 +1027,38 @@ def log_(
         if duration <= _timedelta(0):
             return [], "Duration must be positive."
 
+    # `til:` with no value opens the row; an absent til: just defaults to now.
+    leave_open = "til" in modify_args.properties and modify_args.properties["til"] is None
+
     til = explicit_til
-    if til is None:
+    if til is None and not leave_open:
         til = explicit_from + duration if (explicit_from and duration) else now
-    if til > now:
+    if til is not None and til > now:
         return [], "Cannot log a row ending in the future."
 
+    _today_rows(entries, day_starts_at)  # assigns letters, so a refusal can name the row
+    resolved = resolve(entries, day_starts_at)
+    last = resolved[-1] if resolved else None
+
     from_ = explicit_from
-    if from_ is None and duration is not None:
+    if from_ is None and duration is not None and til is not None:
         from_ = til - duration
     if from_ is None:
         # Derive from the previous row, but never across a logical day boundary —
         # otherwise the first row of a morning would swallow the night.
-        previous = next(
-            (r for r in reversed(resolve(entries, day_starts_at)) if r.end is not None), None
-        )
-        if previous is None or logical_day(previous.end, day_starts_at) != logical_day(til, day_starts_at):
+        reference = til or now
+        if last is None:
             return [], "No earlier row today to continue from. Give from: or for:."
+        if last.end is None:
+            return [], (
+                f"Row {last.entry.id or 'above'} is still open. Close it with "
+                f"`<letter> modify til:<time>`, or give from:."
+            )
+        if logical_day(last.end, day_starts_at) != logical_day(reference, day_starts_at):
+            return [], "No earlier row today to continue from. Give from: or for:."
+
+    if leave_open and last is not None and last.end is None:
+        return [], "A row is already open; close it before opening another."
 
     entry = Entry(
         from_=from_,
@@ -1055,6 +1070,157 @@ def log_(
     )
     label = entry.description or f"{kind}{' on ' + entry.project if entry.project else ''}"
     return [LoggedEvent(entry_id=entry.uuid, snapshot=entry)], f'Logged "{label}".'
+
+
+def _today_rows(entries: list[Entry], day_starts_at):
+    """Rows of the current logical day, lettered. Letters only address today."""
+    from task.timesheet import logical_day, resolve_day
+
+    day = logical_day(datetime.now(), day_starts_at)
+    rows = resolve_day(entries, day, day_starts_at)
+    assign_display_letters([r.entry for r in rows])
+    return rows
+
+
+def _match_letters(rows: list, filter_args: ParsedFilter, verb: str) -> tuple[list, str]:
+    if not filter_args.letters:
+        return [], f"No row given; nothing {verb}."
+    wanted = set(filter_args.letters)
+    matched = [r for r in rows if r.entry.id in wanted]
+    if not matched:
+        return [], f"No row {', '.join(sorted(wanted))} in today's timesheet."
+    return matched, ""
+
+
+def _entry_modify(
+    entries: list[Entry],
+    tasks: list[Task],
+    filter_args: ParsedFilter,
+    modify_args: ParsedModification,
+) -> tuple[list[Event], str]:
+    """Change a timesheet row. Reached as `tsk <letter> modify ...`.
+
+    An empty value clears a field, matching `modify wait:` on tasks — `til:` reopens a
+    row, `from:` hands it back to the derivation chain.
+    """
+    from task.timesheet import DEFAULT_DAY_STARTS_AT
+
+    day_starts_at = DEFAULT_DAY_STARTS_AT
+    now = datetime.now().replace(microsecond=0)
+
+    if modify_args.tags:
+        return [], "Tags are not valid on a timesheet row; use kind: and project:."
+    unknown = set(modify_args.properties) - _ENTRY_PROPS - {"for"}
+    if unknown:
+        return [], f"Unknown propert{'y' if len(unknown) == 1 else 'ies'}: {', '.join(sorted(unknown))}."
+
+    rows = _today_rows(entries, day_starts_at)
+    matched, err = _match_letters(rows, filter_args, "modified")
+    if err:
+        return [], err
+    if len(matched) > 1:
+        return [], "Can only modify one row at a time."
+    row = matched[0]
+    entry = row.entry
+
+    changes: dict[str, FieldChange] = {}
+
+    if modify_args.description.strip():
+        changes["description"] = FieldChange(before=entry.description, after=modify_args.description.strip())
+
+    for prop, field in (("kind", "kind"), ("project", "project")):
+        if prop in modify_args.properties:
+            after = modify_args.properties[prop] or None
+            if field == "kind" and not after:
+                return [], "kind cannot be cleared; every row needs one."
+            if after != getattr(entry, field):
+                changes[field] = FieldChange(before=getattr(entry, field), after=after)
+
+    if "task" in modify_args.properties:
+        raw = modify_args.properties["task"]
+        if not raw:
+            after = None
+        elif not raw.isdigit():
+            return [], f"task: expects a task id, got {raw!r}."
+        else:
+            match = next((t for t in tasks if t.id == int(raw)), None)
+            if match is None:
+                return [], f"No task with id {raw}."
+            after = match.uuid
+        if after != entry.task:
+            changes["task"] = FieldChange(before=entry.task, after=after)
+
+    for prop, field in (("from", "from_"), ("til", "til")):
+        if prop not in modify_args.properties:
+            continue
+        raw = modify_args.properties[prop]
+        if not raw:
+            after = None
+        else:
+            try:
+                after = _resolve_moment(raw, now, day_starts_at)
+            except ValueError as e:
+                return [], str(e)
+        if after != getattr(entry, field):
+            changes[field] = FieldChange(before=getattr(entry, field), after=after)
+
+    if not changes:
+        return [], "Nothing to change."
+
+    til = changes["til"].after if "til" in changes else entry.til
+    if til is not None and til > now:
+        return [], "Cannot set a row to end in the future."
+    start = changes["from_"].after if "from_" in changes else entry.from_
+    if start is None:
+        start = row.start
+    if start is not None and til is not None and til <= start:
+        return [], f"Row would end at or before it starts ({start:%H:%M})."
+
+    label = entry.description or entry.kind
+    return [EntryUpdatedEvent(entry_id=entry.uuid, changes=changes)], f'Updated "{label}".'
+
+
+def _entry_delete(
+    entries: list[Entry],
+    tasks: list[Task],
+    filter_args: ParsedFilter,
+    modify_args: ParsedModification,
+) -> tuple[list[Event], str]:
+    """Remove timesheet rows. Reached as `tsk <letter> delete`.
+
+    Deleting a row lets the next one absorb its slot, which happens for free mid-chain
+    because starts are derived. The day's *first* row has no predecessor to derive from,
+    so its successor is promoted to an anchor at the deleted row's start.
+    """
+    from task.timesheet import DEFAULT_DAY_STARTS_AT
+
+    rows = _today_rows(entries, DEFAULT_DAY_STARTS_AT)
+    matched, err = _match_letters(rows, filter_args, "deleted")
+    if err:
+        return [], err
+
+    events: list[Event] = []
+    doomed = {r.entry.uuid for r in matched}
+    for i, row in enumerate(rows):
+        if row.entry.uuid not in doomed:
+            continue
+        successor = rows[i + 1] if i + 1 < len(rows) else None
+        first_of_day = i == 0
+        if (
+            first_of_day
+            and successor is not None
+            and successor.entry.uuid not in doomed
+            and successor.entry.from_ is None
+            and row.start is not None
+        ):
+            events.append(EntryUpdatedEvent(
+                entry_id=successor.entry.uuid,
+                changes={"from_": FieldChange(before=None, after=row.start)},
+            ))
+        events.append(EntryDeletedEvent(entry_id=row.entry.uuid))
+
+    labels = ", ".join(f'"{r.entry.description or r.entry.kind}"' for r in matched)
+    return events, f"Deleted {labels}."
 
 
 def _render_day_table(rows: list, tasks: list[Task], day) -> None:

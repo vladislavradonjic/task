@@ -37,6 +37,19 @@ _SHELL_COMMANDS = {"init", "help", "context", "undo", "rebuild"}
 # Timesheet commands: pure, but take (entries, tasks, filter, modify). See docs/timesheet.md.
 _ENTRY_COMMANDS = {"log", "day"}
 
+# Shared names. `tsk c delete` addresses a timesheet row, `tsk 3 delete` a task, so the
+# shell routes on which kind of id the filter carries.
+_DUAL_COMMANDS = {"modify": "_entry_modify", "delete": "_entry_delete"}
+
+
+def _entry_command(command: str, parsed_filter):
+    """The timesheet function for this invocation, or None if it is a task command."""
+    if command in _ENTRY_COMMANDS:
+        return getattr(commands, f"{command}_")
+    if command in _DUAL_COMMANDS and parsed_filter.letters:
+        return getattr(commands, _DUAL_COMMANDS[command])
+    return None
+
 
 def _load_cfg(d, cached=None, stamp=None):
     """Reload config.toml only when it has changed, so a long REPL picks up edits."""
@@ -134,8 +147,9 @@ def _repl_loop(d) -> None:
                     print(message)
                 continue
 
-            if command in _ENTRY_COMMANDS:
-                message = _dispatch_entry_command(fn, context, parsed_filter, parsed_modification)
+            entry_fn = _entry_command(command, parsed_filter)
+            if entry_fn is not None:
+                message = _dispatch_entry_command(entry_fn, context, parsed_filter, parsed_modification)
                 if message:
                     print(message)
                 continue
@@ -251,8 +265,9 @@ def _main() -> None:
         _repl_loop(d)
         return
 
-    if command in _ENTRY_COMMANDS:
-        message = _dispatch_entry_command(fn, context, parsed_filter, parsed_modification)
+    entry_fn = _entry_command(command, parsed_filter)
+    if entry_fn is not None:
+        message = _dispatch_entry_command(entry_fn, context, parsed_filter, parsed_modification)
         if message:
             print(message)
         return

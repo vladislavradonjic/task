@@ -10,8 +10,16 @@ from datetime import date, datetime, time, timedelta
 import pytest
 
 from task import commands
-from task.commands import day_, log_
-from task.models import Entry, LoggedEvent, ParsedFilter, ParsedModification, Task
+from task.commands import _entry_delete, _entry_modify, day_, log_
+from task.models import (
+    Entry,
+    EntryDeletedEvent,
+    EntryUpdatedEvent,
+    LoggedEvent,
+    ParsedFilter,
+    ParsedModification,
+    Task,
+)
 from task.storage import assign_display_ids
 from task.timesheet import (
     day_window,
@@ -452,3 +460,196 @@ def test_day_shows_the_task_link(at_1100, capsys):
 def test_day_rejects_an_unparseable_date(at_1100):
     events, message = day_([], [], ParsedFilter(), _mod("notadate"))
     assert events == [] and "notadate" in message
+
+
+# ---------------------------------------------------------------------------
+# editing: _entry_modify / _entry_delete, reached via `tsk <letter> modify|delete`
+# ---------------------------------------------------------------------------
+
+def _rows(*entries):
+    """Entries as they would be after a day render, so letters are assigned."""
+    from task.storage import assign_display_letters
+
+    listed = list(entries)
+    assign_display_letters([r.entry for r in resolve_day(listed, date(2026, 8, 29))])
+    return listed
+
+
+def _edit(entries, letters, tasks=None, description="", **props):
+    return _entry_modify(
+        entries, tasks or [],
+        ParsedFilter(letters=letters if isinstance(letters, list) else [letters]),
+        _mod(description, **props),
+    )
+
+
+def _rm(entries, letters, tasks=None):
+    return _entry_delete(
+        entries, tasks or [],
+        ParsedFilter(letters=letters if isinstance(letters, list) else [letters]),
+        _mod(),
+    )
+
+
+def test_modify_changes_the_end(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(til=_at(11)))
+    events, message = _edit(entries, "a", til="10:00")
+    assert isinstance(events[0], EntryUpdatedEvent)
+    assert events[0].changes["til"].after == _at(10)
+    assert "Updated" in message
+
+
+def test_modifying_an_end_cascades_into_the_next_row(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(til=_at(11)))
+    events, _ = _edit(entries, "a", til="10:00")
+    from task.events import apply_entry_event
+    updated = apply_entry_event(entries, events[0])
+    rows = resolve(updated)
+    assert rows[1].start == _at(10) and rows[1].duration == timedelta(hours=1)
+
+
+def test_modify_changes_kind_project_and_description(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30), description="rough"))
+    events, _ = _edit(entries, "a", description="client sync", kind="call", project="acme")
+    changes = events[0].changes
+    assert changes["kind"].after == "call"
+    assert changes["project"].after == "acme"
+    assert changes["description"].after == "client sync"
+
+
+def test_modify_can_clear_til_to_reopen_a_row(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, _ = _edit(entries, "a", til=None)
+    assert events[0].changes["til"].after is None
+
+
+def test_modify_can_clear_from_to_rejoin_the_chain(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(from_=_at(10), til=_at(11)))
+    events, _ = _edit(entries, "b", **{"from": None})
+    assert events[0].changes["from_"].after is None
+
+
+def test_modify_links_and_unlinks_a_task(at_1100):
+    task = Task(description="write the parser")
+    assign_display_ids([task])
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, _ = _edit(entries, "a", [task], task="1")
+    assert events[0].changes["task"].after == task.uuid
+
+
+def test_modify_refuses_to_clear_kind(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, message = _edit(entries, "a", kind=None)
+    assert events == [] and "cannot be cleared" in message
+
+
+def test_modify_refuses_a_future_end(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, message = _edit(entries, "a", til="23:00")
+    assert events == [] and "future" in message
+
+
+def test_modify_refuses_an_end_at_or_before_the_start(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, message = _edit(entries, "a", til="8:00")
+    assert events == [] and "before it starts" in message
+
+
+def test_modify_reports_when_nothing_would_change(at_1100):
+    entries = _rows(_e(kind="solo", from_=_at(9), til=_at(9, 30)))
+    events, message = _edit(entries, "a", kind="solo")
+    assert events == [] and "Nothing to change" in message
+
+
+def test_modify_needs_a_row(at_1100):
+    events, message = _edit(_rows(_e(from_=_at(9), til=_at(9, 30))), [])
+    assert events == [] and "No row given" in message
+
+
+def test_modify_reports_an_unknown_letter(at_1100):
+    events, message = _edit(_rows(_e(from_=_at(9), til=_at(9, 30))), "z", til="9:45")
+    assert events == [] and "No row z" in message
+
+
+def test_modify_refuses_more_than_one_row(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(til=_at(11)))
+    events, message = _edit(entries, ["a", "b"], til="9:45")
+    assert events == [] and "one row at a time" in message
+
+
+def test_modify_refuses_tags(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, message = _entry_modify(
+        entries, [], ParsedFilter(letters=["a"]), ParsedModification(tags=["+x"]))
+    assert events == [] and "Tags are not valid" in message
+
+
+# --- delete ---
+
+def test_delete_removes_the_row(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(til=_at(11)))
+    events, message = _rm(entries, "b")
+    assert [type(e) for e in events] == [EntryDeletedEvent]
+    assert "Deleted" in message
+
+
+def test_deleting_mid_chain_lets_the_next_row_absorb_the_slot(at_1100):
+    from task.events import apply_entry_event
+
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(til=_at(11)), _e(til=_at(12)))
+    events, _ = _rm(entries, "b")
+    remaining = entries
+    for event in events:
+        remaining = apply_entry_event(remaining, event)
+    rows = resolve(remaining)
+    assert rows[1].start == _at(9, 30) and rows[1].end == _at(12)
+
+
+def test_deleting_the_days_first_row_promotes_its_successor_to_an_anchor(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(til=_at(11)))
+    events, _ = _rm(entries, "a")
+    promotion = next(e for e in events if isinstance(e, EntryUpdatedEvent))
+    assert promotion.changes["from_"].after == _at(9)
+
+
+def test_promotion_keeps_the_rest_of_the_day_resolvable(at_1100):
+    from task.events import apply_entry_event
+
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(til=_at(11)))
+    events, _ = _rm(entries, "a")
+    remaining = entries
+    for event in events:
+        remaining = apply_entry_event(remaining, event)
+    rows = resolve(remaining)
+    assert rows[0].start == _at(9) and rows[0].end == _at(11)
+
+
+def test_no_promotion_when_the_successor_is_already_anchored(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(from_=_at(10), til=_at(11)))
+    events, _ = _rm(entries, "a")
+    assert all(isinstance(e, EntryDeletedEvent) for e in events)
+
+
+def test_delete_needs_a_row(at_1100):
+    events, message = _rm(_rows(_e(from_=_at(9), til=_at(9, 30))), [])
+    assert events == [] and "No row given" in message
+
+
+# --- open rows on log ---
+
+def test_log_can_leave_a_row_open(at_1100):
+    previous = _e(from_=_at(9), til=_at(9, 30))
+    events, _ = _log([previous], description="writing docs", kind="solo", til=None)
+    assert events[0].snapshot.til is None
+
+
+def test_log_refuses_to_chain_off_an_open_row(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(description="open one"))
+    events, message = _log(entries, description="next", kind="solo", til="10:00")
+    assert events == [] and "still open" in message
+
+
+def test_log_refuses_a_second_open_row(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)), _e(description="open one"))
+    events, message = _log(entries, description="another", kind="solo", til=None, **{"from": "10:00"})
+    assert events == [] and "already open" in message

@@ -311,3 +311,66 @@ def test_rebuild_in_the_repl_rerenders(tmp_data_dir, monkeypatch, capsys):
     _drive(monkeypatch, ["add alpha", "rebuild"])
     cli._repl_loop(tmp_data_dir)
     assert "Rebuilt 1 task" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# routing: shared command names reach different functions by id kind
+# ---------------------------------------------------------------------------
+
+def test_letters_route_modify_to_the_timesheet():
+    from task.models import ParsedFilter
+    assert cli._entry_command("modify", ParsedFilter(letters=["b"])) is commands._entry_modify
+
+
+def test_digits_route_modify_to_tasks():
+    from task.models import ParsedFilter
+    assert cli._entry_command("modify", ParsedFilter(ids=[3])) is None
+
+
+def test_letters_route_delete_to_the_timesheet():
+    from task.models import ParsedFilter
+    assert cli._entry_command("delete", ParsedFilter(letters=["c"])) is commands._entry_delete
+
+
+def test_log_and_day_are_always_timesheet_commands():
+    from task.models import ParsedFilter
+    assert cli._entry_command("log", ParsedFilter()) is commands.log_
+    assert cli._entry_command("day", ParsedFilter()) is commands.day_
+
+
+def test_unrelated_commands_are_never_timesheet_commands():
+    from task.models import ParsedFilter
+    assert cli._entry_command("add", ParsedFilter(letters=["b"])) is None
+
+
+def test_repl_logs_and_edits_a_row(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [
+        "log standup kind:meeting from:6:00 til:6:30",
+        "log deep work kind:solo til:8:00",
+        "a modify til:7:00",
+        "day",
+    ])
+    cli._repl_loop(tmp_data_dir)
+    out = capsys.readouterr().out
+    assert "07:00" in out and "1:00" in out
+
+
+def test_repl_deletes_a_row(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [
+        "log standup kind:meeting from:6:00 til:6:30",
+        "log deep work kind:solo til:8:00",
+        "b delete",
+    ])
+    cli._repl_loop(tmp_data_dir)
+    entries = storage.load_entries(tmp_data_dir / "default")
+    assert [e.description for e in entries] == ["standup"]
+
+
+def test_repl_task_delete_still_targets_tasks(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["add a task", "1 delete"])
+    cli._repl_loop(tmp_data_dir)
+    tasks = storage.load_tasks(tmp_data_dir / "default")
+    assert [t.status for t in tasks] == ["deleted"]

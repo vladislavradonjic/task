@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class ParsedFilter(BaseModel):
     ids: list[int] = []
+    letters: list[str] = []  # timesheet row addresses; see docs/timesheet.md
     tags: list[str] = []
     properties: dict[str, str | None] = {}
 

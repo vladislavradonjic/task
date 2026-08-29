@@ -131,3 +131,38 @@ def test_modification_integers_are_description_words():
     assert result.description == "depends 3,4"
     assert result.tags == []
     assert result.properties == {}
+
+
+# ---------------------------------------------------------------------------
+# timesheet row addresses — letters in the filter section (docs/timesheet.md)
+# ---------------------------------------------------------------------------
+
+def test_filter_reads_a_single_letter_as_a_row():
+    assert parse_filter(["b"]).letters == ["b"]
+
+
+def test_filter_reads_a_two_letter_row():
+    assert parse_filter(["aa"]).letters == ["aa"]
+
+
+def test_filter_keeps_digits_as_task_ids():
+    parsed = parse_filter(["3"])
+    assert parsed.ids == [3] and parsed.letters == []
+
+
+def test_filter_can_carry_both_kinds_of_id():
+    parsed = parse_filter(["b", "3"])
+    assert parsed.ids == [3] and parsed.letters == ["b"]
+
+
+def test_longer_words_are_not_row_addresses():
+    assert parse_filter(["foo"]).letters == []
+
+
+def test_uppercase_is_not_a_row_address():
+    assert parse_filter(["B"]).letters == []
+
+
+def test_tags_are_still_tags():
+    parsed = parse_filter(["+bug"])
+    assert parsed.tags == ["+bug"] and parsed.letters == []
