@@ -2,7 +2,15 @@ import json
 from datetime import datetime, timedelta
 
 from task import storage
-from task.models import CreatedEvent, Task
+from task.models import (
+    CreatedEvent,
+    Entry,
+    EntryDeletedEvent,
+    EntryUpdatedEvent,
+    FieldChange,
+    LoggedEvent,
+    Task,
+)
 
 
 def test_active_context_reads_state_json(tmp_data_dir):
@@ -252,3 +260,127 @@ def test_event_log_uses_unix_newlines(tmp_data_dir):
 def test_snapshot_uses_unix_newlines(tmp_data_dir):
     storage.save_snapshot(tmp_data_dir, [Task(description="a"), Task(description="b")])
     assert b"\r\n" not in (tmp_data_dir / "tasks.json").read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# timesheet entries — a parallel track over the same event log
+# ---------------------------------------------------------------------------
+
+def _entry(**kw):
+    return Entry(**{"kind": "solo", **kw})
+
+
+def _log(context, entry):
+    storage.append_event(context, LoggedEvent(entry_id=entry.uuid, snapshot=entry))
+
+
+def test_rebuild_entries_from_the_log(tmp_data_dir):
+    first, second = _entry(description="standup"), _entry(description="parser")
+    _log(tmp_data_dir, first)
+    _log(tmp_data_dir, second)
+    assert [e.description for e in storage.rebuild_entries(tmp_data_dir)] == ["standup", "parser"]
+
+
+def test_rebuild_entries_applies_updates_and_deletes(tmp_data_dir):
+    kept, doomed = _entry(description="kept"), _entry(description="doomed")
+    _log(tmp_data_dir, kept)
+    _log(tmp_data_dir, doomed)
+    storage.append_event(tmp_data_dir, EntryUpdatedEvent(
+        entry_id=kept.uuid, changes={"kind": FieldChange(before="solo", after="meeting")}))
+    storage.append_event(tmp_data_dir, EntryDeletedEvent(entry_id=doomed.uuid))
+    rebuilt = storage.rebuild_entries(tmp_data_dir)
+    assert [(e.description, e.kind) for e in rebuilt] == [("kept", "meeting")]
+
+
+def test_load_entries_empty_when_no_log(tmp_data_dir):
+    assert storage.load_entries(tmp_data_dir) == []
+
+
+def test_save_and_load_entries_roundtrip(tmp_data_dir):
+    entries = [
+        _entry(description="standup", kind="meeting", project="internal",
+               from_=datetime(2026, 8, 29, 9, 0), til=datetime(2026, 8, 29, 9, 30)),
+        _entry(description="počisti bazu", project="acme.parse"),
+    ]
+    storage.save_entries_snapshot(tmp_data_dir, entries)
+    assert storage.load_entries(tmp_data_dir) == entries
+
+
+def test_corrupt_entries_cache_falls_back_to_the_log(tmp_data_dir):
+    entry = _entry(description="survives a bad cache")
+    _log(tmp_data_dir, entry)
+    storage.save_entries_snapshot(tmp_data_dir, [entry])
+    (tmp_data_dir / "entries.json").write_text('[{"kind": "so', encoding="utf-8")
+    assert [e.description for e in storage.load_entries(tmp_data_dir)] == ["survives a bad cache"]
+
+
+def test_entries_cache_with_a_bad_shape_falls_back(tmp_data_dir):
+    entry = _entry(description="valid in the log")
+    _log(tmp_data_dir, entry)
+    (tmp_data_dir / "entries.json").write_text('[{"nonsense": true}]', encoding="utf-8")
+    assert [e.description for e in storage.load_entries(tmp_data_dir)] == ["valid in the log"]
+
+
+def test_save_entries_snapshot_leaves_no_temp_file(tmp_data_dir):
+    storage.save_entries_snapshot(tmp_data_dir, [_entry(description="x")])
+    assert not (tmp_data_dir / "entries.json.tmp").exists()
+
+
+def test_entries_snapshot_round_trips_non_latin1_text(tmp_data_dir):
+    # json.dumps escapes non-ASCII, so the cache holds \u0107 rather than raw bytes —
+    # unlike events.jsonl, which pydantic writes as UTF-8. What matters is the round trip.
+    storage.save_entries_snapshot(tmp_data_dir, [_entry(description="ćirilica: đ, č")])
+    assert storage.load_entries(tmp_data_dir)[0].description == "ćirilica: đ, č"
+
+
+def test_entries_snapshot_uses_unix_newlines(tmp_data_dir):
+    storage.save_entries_snapshot(tmp_data_dir, [_entry(description="a"), _entry(description="b")])
+    assert b"\r\n" not in (tmp_data_dir / "entries.json").read_bytes()
+
+
+def test_tasks_and_entries_share_one_log_without_interfering(tmp_data_dir):
+    task = Task(description="a task")
+    storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    _log(tmp_data_dir, _entry(description="an entry"))
+    assert [t.description for t in storage.rebuild_tasks(tmp_data_dir)] == ["a task"]
+    assert [e.description for e in storage.rebuild_entries(tmp_data_dir)] == ["an entry"]
+
+
+def test_entries_survive_a_legacy_log(tmp_data_dir):
+    """Pre-v1.4 started/stopped events must not disturb the entry track."""
+    task = Task(description="old task")
+    storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    legacy = (
+        '{"type":"started","ts":"2026-01-01T09:00:00","task_id":"'
+        + str(task.uuid)
+        + '","note":"","affects_active":true}\n'
+    )
+    with (tmp_data_dir / "events.jsonl").open("a", encoding="utf-8", newline="\n") as f:
+        f.write(legacy)
+    _log(tmp_data_dir, _entry(description="new entry"))
+    assert [e.description for e in storage.rebuild_entries(tmp_data_dir)] == ["new entry"]
+
+
+# --- display letters ---
+
+def test_assign_display_letters_in_order(tmp_data_dir):
+    entries = [_entry(description=str(i)) for i in range(3)]
+    storage.assign_display_letters(entries)
+    assert [e.id for e in entries] == ["a", "b", "c"]
+
+
+def test_assign_display_letters_past_z(tmp_data_dir):
+    entries = [_entry(description=str(i)) for i in range(28)]
+    storage.assign_display_letters(entries)
+    assert [entries[25].id, entries[26].id, entries[27].id] == ["z", "aa", "ab"]
+
+
+def test_assign_display_letters_on_empty_list():
+    storage.assign_display_letters([])  # must not raise
+
+
+def test_display_letter_is_not_persisted(tmp_data_dir):
+    entries = [_entry(description="x")]
+    storage.assign_display_letters(entries)
+    storage.save_entries_snapshot(tmp_data_dir, entries)
+    assert storage.load_entries(tmp_data_dir)[0].id is None

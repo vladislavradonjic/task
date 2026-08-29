@@ -2,8 +2,8 @@ import json, os
 from datetime import datetime
 from pathlib import Path
 from pydantic import TypeAdapter
-from task.models import Event, FieldChange, Task, UpdatedEvent, UndoneEvent
-from task.events import apply_event
+from task.models import Entry, Event, FieldChange, Task, UpdatedEvent, UndoneEvent
+from task.events import apply_entry_event, apply_event
 
 CURRENT_STATE_VERSION = 1
 CURRENT_CONTEXT_VERSION = 1
@@ -109,3 +109,55 @@ def assign_display_ids(tasks: list[Task]) -> None:
     for i, task in enumerate(active, 1):
         task.id = i
 
+
+# --- timesheet entries: a parallel track over the same event log ---------------
+
+
+def rebuild_entries(context: Path) -> list[Entry]:
+    entries: list[Entry] = []
+    for event in effective_events(load_events(context)):
+        entries = apply_entry_event(entries, event)
+    return entries
+
+
+def load_entries(context: Path) -> list[Entry]:
+    cache = context / "entries.json"
+    if cache.exists():
+        try:
+            return [
+                Entry.model_validate(entry)
+                for entry in json.loads(cache.read_text(encoding="utf-8"))
+            ]
+        except (ValueError, OSError):
+            pass  # unreadable or corrupt cache; events.jsonl is canonical, so rebuild
+    entries = rebuild_entries(context)
+    if entries:
+        save_entries_snapshot(context, entries)
+    return entries
+
+
+def save_entries_snapshot(context: Path, entries: list[Entry]) -> None:
+    payload = json.dumps([entry.model_dump(mode="json") for entry in entries], indent=2)
+    tmp = context / "entries.json.tmp"
+    tmp.write_text(payload, encoding="utf-8", newline="\n")
+    os.replace(tmp, context / "entries.json")
+
+
+def _letters():
+    """a..z, then aa, ab, ... — so a long day never runs out of addresses."""
+    width = 1
+    while True:
+        for i in range(26 ** width):
+            label, n = "", i
+            for _ in range(width):
+                label = chr(ord("a") + n % 26) + label
+                n //= 26
+            yield label
+        width += 1
+
+
+def assign_display_letters(entries: list[Entry]) -> None:
+    """Label entries in the order given. Ordering and day-scoping are the caller's job."""
+    letters = _letters()
+    for entry in entries:
+        entry.id = next(letters)
