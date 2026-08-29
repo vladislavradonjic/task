@@ -146,8 +146,11 @@ plain ancestor of `master` with nothing unique.
 - **Errors** print a one-line message to **stderr**; tracebacks are suppressed unless
   `TASK_DEBUG=1`. Success output goes to **stdout**. **Exit codes**: `0` success, `1`
   runtime error, `2` user error (bad input, refusal-by-design).
-- **Timezone**: machine-local for all date resolution and "now"; stored datetimes are
-  tz-aware ISO-8601 with the local offset preserved.
+- **Timezone**: machine-local for all date resolution and "now". Stored datetimes are
+  **naive** ISO-8601 with no offset — `datetime.now()` throughout, verified on disk
+  (`"ts":"2026-08-29T10:13:21.555707"`). This file previously claimed tz-aware storage;
+  that was never true. Keep new code naive so comparisons stay consistent, and note that
+  a row spanning a DST change measures by wall clock, not elapsed time.
 - `events.jsonl` is canonical; `tasks.json` is a rebuildable cache. Mutations append the
   event first, then refresh the snapshot.
 - `modify` / `delete` / `done` with an *empty filter* are no-ops with a clear message.

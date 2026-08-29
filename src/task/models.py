@@ -31,7 +31,46 @@ class Task(BaseModel):
     end: datetime | None = None
     due: datetime | None = None
     wait: datetime | None = None
-    
+
+
+class Entry(BaseModel):
+    """One row of the timesheet — see docs/timesheet.md.
+
+    A separate entity from Task; the two share only the project namespace and the
+    optional `task` link. Timestamps are full datetimes so a row can cross midnight
+    and still measure correctly; only %H:%M is ever rendered.
+    """
+    uuid: UUID = Field(default_factory=uuid4)
+    id: str | None = Field(default=None, exclude=True)  # ephemeral display letter
+    from_: datetime | None = None  # anchor start; None means "derive from the previous row"
+    til: datetime | None = None  # end; None means the row is still open
+    kind: str
+    project: str | None = None
+    description: str = ""
+    task: UUID | None = None
+
+
+class LoggedEvent(BaseModel):
+    type: Literal["logged"] = "logged"
+    ts: datetime = Field(default_factory=datetime.now)
+    entry_id: UUID
+    snapshot: Entry
+
+
+class EntryUpdatedEvent(BaseModel):
+    type: Literal["entry_updated"] = "entry_updated"
+    ts: datetime = Field(default_factory=datetime.now)
+    entry_id: UUID
+    changes: dict[str, "FieldChange"]
+
+
+# Unlike DeletedEvent, this drops the row outright rather than flagging a status.
+# Entries have no lifecycle to preserve, and undo replays the log without the event,
+# so history survives in events.jsonl either way.
+class EntryDeletedEvent(BaseModel):
+    type: Literal["entry_deleted"] = "entry_deleted"
+    ts: datetime = Field(default_factory=datetime.now)
+    entry_id: UUID
 
 
 class CreatedEvent(BaseModel):
@@ -93,6 +132,10 @@ class UndoneEvent(BaseModel):
 
 
 Event = Annotated[
-    Union[CreatedEvent, DoneEvent, DeletedEvent, UpdatedEvent, StartedEvent, StoppedEvent, UndoneEvent],
+    Union[
+        CreatedEvent, DoneEvent, DeletedEvent, UpdatedEvent,
+        LoggedEvent, EntryUpdatedEvent, EntryDeletedEvent,
+        StartedEvent, StoppedEvent, UndoneEvent,
+    ],
     Field(discriminator="type"),
 ]
