@@ -6,7 +6,7 @@ import sys
 from rich.console import Console
 from task import commands, storage
 from task.config import load_config
-from task.events import apply_event
+from task.events import apply_entry_event, apply_event
 from task.parse import parse_filter, parse_modification
 
 
@@ -34,6 +34,9 @@ def _render_default_list(tasks: list, message: str = "") -> None:
 # Commands that do their own I/O and take no task list (see CLAUDE.md, functional core).
 _SHELL_COMMANDS = {"init", "help", "context", "undo", "rebuild"}
 
+# Timesheet commands: pure, but take (entries, tasks, filter, modify). See docs/timesheet.md.
+_ENTRY_COMMANDS = {"log", "day"}
+
 
 def _load_cfg(d, cached=None, stamp=None):
     """Reload config.toml only when it has changed, so a long REPL picks up edits."""
@@ -45,6 +48,20 @@ def _load_cfg(d, cached=None, stamp=None):
     if cached is not None and current == stamp:
         return cached, stamp
     return load_config(d), current
+
+
+def _dispatch_entry_command(fn, context, parsed_filter, parsed_modification) -> str:
+    """Run a timesheet command and persist whatever it returns."""
+    tasks = storage.load_tasks(context)
+    storage.assign_display_ids(tasks)
+    entries = storage.load_entries(context)
+    events, message = fn(entries, tasks, parsed_filter, parsed_modification)
+    for event in events:
+        storage.append_event(context, event)
+        entries = apply_entry_event(entries, event)
+    if events:
+        storage.save_entries_snapshot(context, entries)
+    return message
 
 
 def _repl_loop(d) -> None:
@@ -114,6 +131,12 @@ def _repl_loop(d) -> None:
                     tasks = _load_and_prep(context, cfg)
                     _render_default_list(tasks, message)
                 elif message:
+                    print(message)
+                continue
+
+            if command in _ENTRY_COMMANDS:
+                message = _dispatch_entry_command(fn, context, parsed_filter, parsed_modification)
+                if message:
                     print(message)
                 continue
 
@@ -226,6 +249,12 @@ def _main() -> None:
 
     if command == "run":
         _repl_loop(d)
+        return
+
+    if command in _ENTRY_COMMANDS:
+        message = _dispatch_entry_command(fn, context, parsed_filter, parsed_modification)
+        if message:
+            print(message)
         return
 
     tasks = storage.load_tasks(context)

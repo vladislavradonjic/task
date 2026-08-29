@@ -11,9 +11,9 @@ from uuid import UUID
 
 from rich.console import Console
 from rich.table import Table
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
-from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, effective_events, load_events, rebuild_tasks, save_snapshot
-from task.dates import parse_date
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, Entry, FieldChange, LoggedEvent, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
+from task.storage import active_context, append_event, assign_display_ids, assign_display_letters, data_dir as get_data_dir, effective_events, load_events, rebuild_entries, rebuild_tasks, save_entries_snapshot, save_snapshot
+from task.dates import parse_date, parse_duration_seconds
 from task.urgency import compute_urgency
 
 
@@ -593,15 +593,28 @@ def undo_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
     if target is None:
         return [], "Nothing to undo."
 
-    desc = next(
-        (e.snapshot.description for e in all_events if isinstance(e, CreatedEvent) and e.task_id == target.task_id),
-        str(target.task_id),
-    )
+    # Task and timesheet events name their subject differently.
+    entry_id = getattr(target, "entry_id", None)
+    task_id = getattr(target, "task_id", None)
+    if entry_id is not None:
+        desc = next(
+            (e.snapshot.description or e.snapshot.kind
+             for e in all_events if isinstance(e, LoggedEvent) and e.entry_id == entry_id),
+            str(entry_id),
+        )
+    else:
+        desc = next(
+            (e.snapshot.description for e in all_events if isinstance(e, CreatedEvent) and e.task_id == task_id),
+            str(task_id),
+        )
 
-    append_event(ctx, UndoneEvent(task_id=target.task_id, undid_ts=target.ts, undid_type=target.type))
+    append_event(ctx, UndoneEvent(
+        task_id=task_id, entry_id=entry_id, undid_ts=target.ts, undid_type=target.type,
+    ))
     tasks = rebuild_tasks(ctx)
     assign_display_ids(tasks)
     save_snapshot(ctx, tasks)
+    save_entries_snapshot(ctx, rebuild_entries(ctx))
 
     return [], f'Undid {target.type} on "{desc}".'
 
@@ -927,6 +940,221 @@ def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
     state_file.write_text(json.dumps({"version": 1, "active": "default"}, indent=2), encoding="utf-8", newline="\n")
     _init_context_dir(d / "default")
     return [], f"Initialized at {d}"
+
+
+# --- timesheet ---------------------------------------------------------------
+#
+# Entry commands take (entries, tasks, filter, modify): entries are the subject, tasks
+# are needed to resolve `task:<id>` and to render the link. See docs/timesheet.md.
+
+_ENTRY_PROPS = {"kind", "project", "task", "from", "til", "for"}
+
+
+def _resolve_moment(raw: str, now: datetime, day_starts_at) -> datetime:
+    """A bare clock time lands inside the current logical day; anything else is a date."""
+    from task.timesheet import resolve_clock
+
+    try:
+        clock = datetime.strptime(raw.strip(), "%H:%M").time()
+    except ValueError:
+        return parse_date(raw).replace(tzinfo=None)
+    return resolve_clock(clock, now, day_starts_at)
+
+
+def _fmt_delta(delta) -> str:
+    total = int(delta.total_seconds())
+    return f"{total // 3600}:{(total % 3600) // 60:02d}"
+
+
+def log_(
+    entries: list[Entry],
+    tasks: list[Task],
+    filter_args: ParsedFilter,
+    modify_args: ParsedModification,
+) -> tuple[list[Event], str]:
+    """Add a timesheet row.
+
+    Usage: tsk log [description...] kind:<k> [project:<p>] [task:<id>] [from:<t>] [til:<t>] [for:<d>]
+
+    The end defaults to now; the start is read from the previous row unless from: says
+    otherwise. Times may be bare clock values (9:15) and resolve inside the current day.
+    """
+    from task.timesheet import DEFAULT_DAY_STARTS_AT, logical_day, resolve
+
+    day_starts_at = DEFAULT_DAY_STARTS_AT
+    now = datetime.now().replace(microsecond=0)
+
+    if modify_args.tags:
+        return [], "Tags are not valid on log; use kind: and project:."
+    unknown = set(modify_args.properties) - _ENTRY_PROPS
+    if unknown:
+        return [], f"Unknown propert{'y' if len(unknown) == 1 else 'ies'} on log: {', '.join(sorted(unknown))}."
+
+    kind = modify_args.properties.get("kind")
+    if not kind:
+        return [], "No kind given. Usage: tsk log <description> kind:<kind>"
+
+    task_uuid = None
+    raw_task = modify_args.properties.get("task")
+    if raw_task:
+        if not raw_task.isdigit():
+            return [], f"task: expects a task id, got {raw_task!r}."
+        match = next((t for t in tasks if t.id == int(raw_task)), None)
+        if match is None:
+            return [], f"No task with id {raw_task}."
+        task_uuid = match.uuid
+
+    try:
+        explicit_from = (
+            _resolve_moment(modify_args.properties["from"], now, day_starts_at)
+            if modify_args.properties.get("from") else None
+        )
+        explicit_til = (
+            _resolve_moment(modify_args.properties["til"], now, day_starts_at)
+            if modify_args.properties.get("til") else None
+        )
+    except ValueError as e:
+        return [], str(e)
+
+    duration = None
+    if modify_args.properties.get("for"):
+        if explicit_from and explicit_til:
+            return [], "Give at most two of from:, til: and for:."
+        try:
+            duration = _timedelta(seconds=parse_duration_seconds(modify_args.properties["for"]))
+        except ValueError as e:
+            return [], f"Invalid duration: {e}"
+        if duration <= _timedelta(0):
+            return [], "Duration must be positive."
+
+    til = explicit_til
+    if til is None:
+        til = explicit_from + duration if (explicit_from and duration) else now
+    if til > now:
+        return [], "Cannot log a row ending in the future."
+
+    from_ = explicit_from
+    if from_ is None and duration is not None:
+        from_ = til - duration
+    if from_ is None:
+        # Derive from the previous row, but never across a logical day boundary —
+        # otherwise the first row of a morning would swallow the night.
+        previous = next(
+            (r for r in reversed(resolve(entries, day_starts_at)) if r.end is not None), None
+        )
+        if previous is None or logical_day(previous.end, day_starts_at) != logical_day(til, day_starts_at):
+            return [], "No earlier row today to continue from. Give from: or for:."
+
+    entry = Entry(
+        from_=from_,
+        til=til,
+        kind=kind,
+        project=modify_args.properties.get("project"),
+        description=modify_args.description.strip(),
+        task=task_uuid,
+    )
+    label = entry.description or f"{kind}{' on ' + entry.project if entry.project else ''}"
+    return [LoggedEvent(entry_id=entry.uuid, snapshot=entry)], f'Logged "{label}".'
+
+
+def _render_day_table(rows: list, tasks: list[Task], day) -> None:
+    from rich import box as _box
+
+    from task.timesheet import rollup, total_tracked
+
+    by_uuid = {t.uuid: t for t in tasks}
+    show_project = any(r.entry.project for r in rows)
+    show_task = any(r.entry.task for r in rows)
+
+    table = Table(
+        show_header=True,
+        box=_box.SIMPLE_HEAD,
+        title=f"{day:%A %-d %b}   {_fmt_delta(total_tracked(rows))} tracked",
+        title_justify="left",
+        title_style="bold",
+    )
+    columns = ["", "Time", "Dur", "Kind"]
+    if show_project:
+        columns.append("Project")
+    columns.append("Description")
+    if show_task:
+        columns.append("Task")
+    for name in columns:
+        table.add_column(
+            name,
+            style="bold" if name == "" else None,
+            justify="right" if name == "Dur" else "left",
+            overflow="fold" if name == "Description" else "ellipsis",
+        )
+
+    for r in rows:
+        if r.gap_before and r.start is not None:
+            gap = dict.fromkeys(columns, "")
+            gap["Time"] = f"[dim]{r.start - r.gap_before:%H:%M}–{r.start:%H:%M}[/dim]"
+            gap["Dur"] = f"[dim]{_fmt_delta(r.gap_before)}[/dim]"
+            gap["Description"] = "[dim]untracked[/dim]"
+            table.add_row(*(gap[c] for c in columns))
+
+        start = f"{r.start:%H:%M}" if r.start else "?"
+        end = f"{r.end:%H:%M}" if r.end else "  ?  "
+        row = [
+            r.entry.id or "-",
+            f"{start}–{end}",
+            _fmt_delta(r.duration) if r.duration else "open",
+            r.entry.kind,
+        ]
+        if show_project:
+            row.append(r.entry.project or "")
+        row.append(r.entry.description)
+        if show_task:
+            linked = by_uuid.get(r.entry.task) if r.entry.task else None
+            row.append(f"→{linked.id}" if linked and linked.id else "")
+        table.add_row(*row, style="dim" if r.entry.kind == "junk" else None)
+
+    console = Console()
+    console.print(table)
+    if rows:
+        kinds = "  ".join(f"{k} {_fmt_delta(v)}" for k, v in rollup(rows, "kind").items())
+        projects = "  ".join(
+            f"{p or '—'} {_fmt_delta(v)}" for p, v in rollup(rows, "project").items()
+        )
+        console.print(f"  [dim]{kinds}[/dim]", highlight=False)
+        console.print(f"  [dim]{projects}[/dim]", highlight=False)
+
+
+def day_(
+    entries: list[Entry],
+    tasks: list[Task],
+    filter_args: ParsedFilter,
+    modify_args: ParsedModification,
+) -> tuple[list[Event], str]:
+    """Show the timesheet for a logical day.
+
+    Usage: tsk day [<date>]
+
+    Bare form shows today. A day runs from 04:00 to 04:00, so work past midnight stays
+    with the evening it belongs to.
+    """
+    from task.timesheet import DEFAULT_DAY_STARTS_AT, logical_day, resolve_day
+
+    day_starts_at = DEFAULT_DAY_STARTS_AT
+    raw = modify_args.description.strip()
+    if raw:
+        # An explicit argument names a calendar date, and we show that date's logical day.
+        # (Bare dates parse to midnight, which logical_day would push to the day before.)
+        try:
+            day = parse_date(raw).replace(tzinfo=None).date()
+        except ValueError as e:
+            return [], str(e)
+    else:
+        day = logical_day(datetime.now(), day_starts_at)
+
+    rows = resolve_day(entries, day, day_starts_at)
+    if not rows:
+        return [], f"Nothing logged for {day:%A %-d %b}."
+    assign_display_letters([r.entry for r in rows])
+    _render_day_table(rows, tasks, day)
+    return [], ""
 
 
 def rebuild_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:

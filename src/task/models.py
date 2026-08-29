@@ -124,9 +124,12 @@ class StoppedEvent(BaseModel):
 
 
 class UndoneEvent(BaseModel):
+    # Purely informational: replay excludes events by `undid_ts` (storage.effective_events),
+    # so neither subject id is load-bearing. One of the two is set, per the event undone.
     type: Literal["undone"] = "undone"
     ts: datetime = Field(default_factory=datetime.now)
-    task_id: UUID
+    task_id: UUID | None = None
+    entry_id: UUID | None = None
     undid_ts: datetime
     undid_type: str
 

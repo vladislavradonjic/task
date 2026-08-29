@@ -7,7 +7,12 @@ stays with the evening it belongs to.
 
 from datetime import date, datetime, time, timedelta
 
-from task.models import Entry
+import pytest
+
+from task import commands
+from task.commands import day_, log_
+from task.models import Entry, LoggedEvent, ParsedFilter, ParsedModification, Task
+from task.storage import assign_display_ids
 from task.timesheet import (
     day_window,
     logical_day,
@@ -257,3 +262,193 @@ def test_rollup_is_ordered_by_descending_total():
 
 def test_rollup_of_nothing_is_empty():
     assert rollup([], "kind") == {}
+
+
+# ---------------------------------------------------------------------------
+# log_ / day_ — the commands (docs/timesheet.md)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def at_1100(monkeypatch):
+    """Pin the clock so `til:` defaulting and future-checks are deterministic."""
+    def _pin(moment):
+        real = datetime
+
+        class Fake(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real(moment.year, moment.month, moment.day, moment.hour, moment.minute)
+
+        monkeypatch.setattr(commands, "datetime", Fake)
+    _pin(_at(11, 0))
+    return _at(11, 0)
+
+
+def _mod(description="", **props):
+    return ParsedModification(description=description, properties=props)
+
+
+def _log(entries, tasks=None, description="", **props):
+    return log_(entries, tasks or [], ParsedFilter(), _mod(description, **props))
+
+
+def test_log_emits_one_logged_event(at_1100):
+    events, message = _log([], description="standup", kind="meeting", **{"from": "9:00", "til": "9:30"})
+    assert len(events) == 1 and isinstance(events[0], LoggedEvent)
+    assert "standup" in message
+
+
+def test_log_stores_the_anchor_and_end(at_1100):
+    events, _ = _log([], description="standup", kind="meeting", **{"from": "9:00", "til": "9:30"})
+    entry = events[0].snapshot
+    assert entry.from_ == _at(9) and entry.til == _at(9, 30)
+
+
+def test_log_til_defaults_to_now(at_1100):
+    events, _ = _log([], description="x", kind="solo", **{"from": "9:00"})
+    assert events[0].snapshot.til == _at(11, 0)
+
+
+def test_log_leaves_from_unset_so_it_derives(at_1100):
+    previous = _e(from_=_at(9), til=_at(9, 30))
+    events, _ = _log([previous], description="next", kind="solo", til="10:00")
+    assert events[0].snapshot.from_ is None
+
+
+def test_logged_row_chains_onto_the_previous_one(at_1100):
+    previous = _e(from_=_at(9), til=_at(9, 30))
+    events, _ = _log([previous], description="next", kind="solo", til="10:00")
+    rows = resolve([previous, events[0].snapshot])
+    assert rows[1].start == _at(9, 30) and rows[1].duration == timedelta(minutes=30)
+
+
+def test_log_for_computes_the_end_from_the_anchor(at_1100):
+    events, _ = _log([], description="x", kind="solo", **{"from": "9:00", "for": "90min"})
+    assert events[0].snapshot.til == _at(10, 30)
+
+
+def test_log_for_computes_the_anchor_from_the_end(at_1100):
+    events, _ = _log([], description="x", kind="solo", til="10:00", **{"for": "1h"})
+    assert events[0].snapshot.from_ == _at(9, 0)
+
+
+def test_log_refuses_all_three_of_from_til_and_for(at_1100):
+    events, message = _log([], kind="solo", **{"from": "9:00", "til": "10:00", "for": "1h"})
+    assert events == [] and "at most two" in message
+
+
+def test_log_refuses_a_future_end(at_1100):
+    events, message = _log([], description="x", kind="solo", til="23:00")
+    assert events == [] and "future" in message
+
+
+def test_log_requires_a_kind(at_1100):
+    events, message = _log([], description="x")
+    assert events == [] and "kind" in message
+
+
+def test_log_refuses_tags(at_1100):
+    events, message = log_([], [], ParsedFilter(), ParsedModification(description="x", tags=["+bug"]))
+    assert events == [] and "Tags are not valid" in message
+
+
+def test_log_refuses_unknown_properties(at_1100):
+    events, message = _log([], kind="solo", bogus="1")
+    assert events == [] and "bogus" in message
+
+
+def test_log_without_an_earlier_row_today_asks_for_an_anchor(at_1100):
+    events, message = _log([], description="x", kind="solo", til="10:00")
+    assert events == [] and "from:" in message
+
+
+def test_log_will_not_chain_across_a_day_boundary(at_1100):
+    """Last night's last row must not become this morning's start."""
+    last_night = _e(from_=_at(22, day=28), til=_at(23, day=28))
+    events, message = _log([last_night], description="morning", kind="solo", til="10:00")
+    assert events == [] and "from:" in message
+
+
+def test_log_links_a_task_by_display_id(at_1100):
+    task = Task(description="write the parser")
+    assign_display_ids([task])
+    events, _ = _log([], [task], description="x", kind="solo", task="1", **{"from": "9:00"})
+    assert events[0].snapshot.task == task.uuid
+
+
+def test_log_refuses_an_unknown_task_id(at_1100):
+    events, message = _log([], [], kind="solo", task="99", **{"from": "9:00"})
+    assert events == [] and "No task with id 99" in message
+
+
+def test_log_refuses_a_non_numeric_task(at_1100):
+    events, message = _log([], [], kind="solo", task="abc", **{"from": "9:00"})
+    assert events == [] and "task id" in message
+
+
+def test_log_keeps_description_optional_when_kind_and_project_say_enough(at_1100):
+    events, message = _log([], kind="meeting", project="acme", **{"from": "9:00"})
+    assert events[0].snapshot.description == ""
+    assert "meeting on acme" in message
+
+
+def test_log_resolves_a_clock_time_across_midnight(monkeypatch):
+    real = datetime
+
+    class Fake(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2026, 8, 30, 0, 50)
+
+    monkeypatch.setattr(commands, "datetime", Fake)
+    events, _ = _log([], description="late deploy", kind="solo", **{"from": "23:30"})
+    entry = events[0].snapshot
+    assert entry.from_ == datetime(2026, 8, 29, 23, 30)
+    assert entry.til == datetime(2026, 8, 30, 0, 50)
+    assert resolve([entry])[0].duration == timedelta(hours=1, minutes=20)
+    assert resolve([entry])[0].day == date(2026, 8, 29)
+
+
+# --- day_ ---
+
+def test_day_reports_an_empty_day(at_1100):
+    events, message = day_([], [], ParsedFilter(), _mod())
+    assert events == [] and "Nothing logged" in message
+
+
+def test_day_renders_rows_with_times_kinds_and_totals(at_1100, capsys):
+    day_(_a_day(), [], ParsedFilter(), _mod())
+    out = capsys.readouterr().out
+    assert "09:00" in out and "09:30" in out
+    assert "meeting" in out and "junk" in out
+    assert "4:30 tracked" in out          # sums the day, excluding the 45m gap
+    assert "untracked" in out             # and shows the gap explicitly
+
+
+def test_day_assigns_letters_in_timeline_order(at_1100):
+    entries = _a_day()
+    day_(entries, [], ParsedFilter(), _mod())
+    assert [e.id for e in entries] == ["a", "b", "c", "d", "e"]
+
+
+def test_day_accepts_an_explicit_date(at_1100, capsys):
+    day_(_a_day(), [], ParsedFilter(), _mod("2026-08-29"))
+    assert "Saturday 29 Aug" in capsys.readouterr().out
+
+
+def test_day_with_an_explicit_date_that_has_no_rows(at_1100):
+    events, message = day_(_a_day(), [], ParsedFilter(), _mod("2026-08-27"))
+    assert events == [] and "Thursday 27 Aug" in message
+
+
+def test_day_shows_the_task_link(at_1100, capsys):
+    task = Task(description="write the parser")
+    assign_display_ids([task])
+    entries = [_e(from_=_at(9), til=_at(9, 30), task=task.uuid)]
+    day_(entries, [task], ParsedFilter(), _mod())
+    assert "→1" in capsys.readouterr().out
+
+
+def test_day_rejects_an_unparseable_date(at_1100):
+    events, message = day_([], [], ParsedFilter(), _mod("notadate"))
+    assert events == [] and "notadate" in message
