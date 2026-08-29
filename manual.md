@@ -245,7 +245,10 @@ You type end times; starts follow. Three things fall out of that:
 - `task:<id>` links the row to a task, which the day view shows as `→1`.
 - `til:` with no value leaves the row **open**. At most one row may be open; close it with
   `<letter> modify til:<time>` before logging the next.
-- A future end time is refused.
+- **A `til:` ahead of the clock is allowed, as long as it lands inside today.** Calendar
+  entries have a known end, so you can log a 14:00–15:00 meeting before it finishes and
+  correct it with `<letter> modify til:` if it overruns. An end beyond the current logical
+  day is refused as a typo, and so is an end at or before the row's start.
 
 ### day
 

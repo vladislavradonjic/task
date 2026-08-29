@@ -1010,6 +1010,22 @@ def _resolve_moment(raw: str, now: datetime, day_starts_at) -> datetime:
     return resolve_clock(clock, now, day_starts_at)
 
 
+def _day_end(now: datetime, day_starts_at) -> datetime:
+    """The instant the current logical day ends — the ceiling for any `til:`."""
+    from task.timesheet import day_window, logical_day
+
+    return day_window(logical_day(now, day_starts_at), day_starts_at)[1]
+
+
+def _fmt_day(day) -> str:
+    """`Saturday 29 Aug`, without the day-of-month zero padding.
+
+    `%-d` is a glibc extension: Windows' strftime rejects it with "Invalid format
+    string", and `%#d` is the MSVC spelling. Interpolating the integer avoids both.
+    """
+    return f"{day:%A} {day.day} {day:%b}"
+
+
 def _fmt_delta(delta) -> str:
     total = int(delta.total_seconds())
     return f"{total // 3600}:{(total % 3600) // 60:02d}"
@@ -1098,8 +1114,10 @@ def log_(
     til = explicit_til
     if til is None and not leave_open:
         til = explicit_from + duration if (explicit_from and duration) else now
-    if til is not None and til > now:
-        return [], "Cannot log a row ending in the future."
+    # A scheduled end may legitimately be ahead of the clock — you know a meeting runs
+    # to 15:00 and correct it later if it overruns. Beyond today is still a typo.
+    if til is not None and til >= _day_end(now, day_starts_at):
+        return [], "Cannot log a row ending after today."
 
     _today_rows(entries, day_starts_at)  # assigns letters, so a refusal can name the row
     resolved = resolve(entries, day_starts_at)
@@ -1124,6 +1142,10 @@ def log_(
 
     if leave_open and last is not None and last.end is None:
         return [], "A row is already open; close it before opening another."
+
+    start = from_ if from_ is not None else (last.end if last is not None else None)
+    if start is not None and til is not None and til <= start:
+        return [], f"Row would end at or before it starts ({start:%H:%M})."
 
     entry = Entry(
         from_=from_,
@@ -1235,8 +1257,8 @@ def _entry_modify(
         return [], "Nothing to change."
 
     til = changes["til"].after if "til" in changes else entry.til
-    if til is not None and til > now:
-        return [], "Cannot set a row to end in the future."
+    if til is not None and til >= _day_end(now, day_starts_at):
+        return [], "Cannot set a row to end after today."
     start = changes["from_"].after if "from_" in changes else entry.from_
     if start is None:
         start = row.start
@@ -1301,7 +1323,7 @@ def _render_day_table(rows: list, tasks: list[Task], day) -> None:
     table = Table(
         show_header=True,
         box=_box.SIMPLE_HEAD,
-        title=f"{day:%A %-d %b}   {_fmt_delta(total_tracked(rows))} tracked",
+        title=f"{_fmt_day(day)}   {_fmt_delta(total_tracked(rows))} tracked",
         title_justify="left",
         title_style="bold",
     )
@@ -1384,7 +1406,7 @@ def day_(
 
     rows = resolve_day(entries, day, day_starts_at)
     if not rows:
-        return [], f"Nothing logged for {day:%A %-d %b}."
+        return [], f"Nothing logged for {_fmt_day(day)}."
     assign_display_letters([r.entry for r in rows])
     _render_day_table(rows, tasks, day)
     return [], ""

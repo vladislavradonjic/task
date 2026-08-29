@@ -350,9 +350,35 @@ def test_log_refuses_all_three_of_from_til_and_for(at_1100):
     assert events == [] and "at most two" in message
 
 
-def test_log_refuses_a_future_end(at_1100):
-    events, message = _log([], description="x", kind="solo", til="23:00")
-    assert events == [] and "future" in message
+def test_log_accepts_a_scheduled_end_later_today(at_1100):
+    """Calendar entries have a known end; you log it and correct it if it overruns."""
+    events, _ = _log([], description="client sync", kind="meeting",
+                     **{"from": "14:00", "til": "15:00"})
+    assert events[0].snapshot.til == _at(15, 0)
+
+
+def test_log_accepts_an_end_past_midnight_but_inside_the_logical_day(at_1100):
+    events, _ = _log([], description="late deploy", kind="solo",
+                     **{"from": "23:00", "til": "2026-08-30T02:00"})
+    assert events[0].snapshot.til == datetime(2026, 8, 30, 2, 0)
+
+
+def test_log_refuses_an_end_beyond_today(at_1100):
+    events, message = _log([], description="x", kind="solo",
+                           **{"from": "23:00", "til": "2026-08-31"})
+    assert events == [] and "after today" in message
+
+
+def test_log_refuses_an_end_at_or_before_an_explicit_start(at_1100):
+    events, message = _log([], description="x", kind="solo",
+                           **{"from": "10:00", "til": "9:00"})
+    assert events == [] and "before it starts" in message
+
+
+def test_log_refuses_an_end_before_the_derived_start(at_1100):
+    previous = _e(from_=_at(8), til=_at(12))
+    events, message = _log([previous], description="x", kind="solo", til="11:00")
+    assert events == [] and "before it starts" in message
 
 
 def test_log_requires_a_kind(at_1100):
@@ -549,10 +575,16 @@ def test_modify_refuses_to_clear_kind(at_1100):
     assert events == [] and "cannot be cleared" in message
 
 
-def test_modify_refuses_a_future_end(at_1100):
+def test_modify_accepts_a_scheduled_end_later_today(at_1100):
     entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
-    events, message = _edit(entries, "a", til="23:00")
-    assert events == [] and "future" in message
+    events, _ = _edit(entries, "a", til="15:00")
+    assert events[0].changes["til"].after == _at(15, 0)
+
+
+def test_modify_refuses_an_end_beyond_today(at_1100):
+    entries = _rows(_e(from_=_at(9), til=_at(9, 30)))
+    events, message = _edit(entries, "a", til="2026-08-31")
+    assert events == [] and "after today" in message
 
 
 def test_modify_refuses_an_end_at_or_before_the_start(at_1100):
