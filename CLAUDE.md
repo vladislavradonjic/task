@@ -42,6 +42,8 @@ machine's data has no backup and no remote event history to restore from**, so s
 - `src/task/storage.py` — data dir resolution, snapshot read/rebuild, event append.
 - `src/task/events.py` — `apply_event` reducer; per-event inverse logic for `undo`.
 - `src/task/urgency.py` — urgency score + topological blocker bump.
+- `src/task/timesheet.py` — pure timeline resolution for timesheet entries: logical days,
+  derived start times, cascade, gaps, rollups. No I/O, no config, no rendering.
 - `src/task/config.py` — `config.toml` loading.
 - `src/task/dates.py` — date and duration parsing.
 - `src/task/templates/` — Jinja2 recap templates (`day`/`week`/`month`), shipped in the wheel.
