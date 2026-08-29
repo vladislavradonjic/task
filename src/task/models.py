@@ -1,7 +1,7 @@
 from uuid import UUID, uuid4
 from datetime import datetime
 from typing import Annotated, Any, Literal, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ParsedFilter(BaseModel):
@@ -28,6 +28,21 @@ class Task(BaseModel):
     tags: list[str] = []
     depends: list[UUID] = []
     properties: dict[str, str] = {}
+
+    @field_validator("properties")
+    @classmethod
+    def _normalise_priority(cls, properties: dict[str, str]) -> dict[str, str]:
+        """Fold `priority` to upper case.
+
+        Urgency, the list colouring and `query` all compare against literal "H"/"M"/"L",
+        so `priority:h` used to be accepted, rendered lower case, and score nothing.
+        Normalising here catches every path at once — `add`, `modify`, and replay of
+        rows already written in lower case. Values outside H/M/L are left alone.
+        """
+        value = properties.get("priority")
+        if value is not None and value.upper() in ("H", "M", "L"):
+            return {**properties, "priority": value.upper()}
+        return properties
     entry: datetime = Field(default_factory=datetime.now)
     end: datetime | None = None
     due: datetime | None = None

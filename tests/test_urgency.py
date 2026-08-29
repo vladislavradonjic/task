@@ -224,3 +224,31 @@ def test_urgency_no_due_no_bonus():
     t = _task()
     scores = compute_urgency([t], now=_now())
     assert scores[t.uuid] == pytest.approx(0.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# priority is case-insensitive (normalised on the Task model)
+# ---------------------------------------------------------------------------
+
+def test_lowercase_priority_scores_the_same_as_upper():
+    lower = _task(properties={"priority": "h"})
+    upper = _task(properties={"priority": "H"})
+    now = _now()
+    assert compute_urgency([lower], now=now)[lower.uuid] == pytest.approx(
+        compute_urgency([upper], now=now)[upper.uuid])
+
+
+def test_lowercase_priority_is_stored_upper():
+    assert _task(properties={"priority": "m"}).properties["priority"] == "M"
+
+
+def test_priority_outside_hml_is_left_alone():
+    assert _task(properties={"priority": "urgent"}).properties["priority"] == "urgent"
+
+
+def test_priority_normalises_on_replay_of_old_rows():
+    """Rows written before the fix carry lower case in events.jsonl."""
+    revived = Task.model_validate({"description": "old", "properties": {"priority": "l"}})
+    assert revived.properties["priority"] == "L"
+    scores = compute_urgency([revived], now=_now())
+    assert scores[revived.uuid] == pytest.approx(_COEFF["priority_L"], abs=0.01)
