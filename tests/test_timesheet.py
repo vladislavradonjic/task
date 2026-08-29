@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 import pytest
 
 from task import commands
-from task.commands import _entry_delete, _entry_modify, day_, log_
+from task.commands import _entry_delete, _entry_modify, _hm, day_, log_, recap_
 from task.config import Config, Shortcut, TimesheetConfig
 from task.models import (
     Entry,
@@ -749,3 +749,121 @@ def test_day_boundary_is_honoured_by_the_day_view(at_1100, capsys):
     cfg = _cfg(day_starts_at=time(12, 0))
     day_(_a_day(), [], ParsedFilter(), _mod(), cfg)
     assert "Friday 28 Aug" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# recap: per-period rollups (docs/recap.md)
+# ---------------------------------------------------------------------------
+
+def test_hm_formats_seconds():
+    assert _hm(0) == "0:00"
+    assert _hm(1830) == "0:30"
+    assert _hm(6600) == "1:50"
+    assert _hm(timedelta(hours=2, minutes=5)) == "2:05"
+
+
+def test_hm_tolerates_none():
+    assert _hm(None) == "0:00"
+
+
+def _seed(tmp_data_dir):
+    """A store with one done task and a logged day."""
+    from task import storage
+    from task.models import CreatedEvent, LoggedEvent
+
+    context = tmp_data_dir / "default"
+    context.mkdir(parents=True, exist_ok=True)
+    task = Task(description="write the parser", status="done", end=_at(12))
+    storage.append_event(context, CreatedEvent(task_id=task.uuid, snapshot=task))
+    for entry in _a_day():
+        storage.append_event(context, LoggedEvent(entry_id=entry.uuid, snapshot=entry))
+    return context
+
+
+def _recap(tmp_data_dir, monkeypatch, period="day"):
+    real = datetime
+
+    class Fake(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2026, 8, 29, 18, 0)
+
+    monkeypatch.setattr(commands, "datetime", Fake)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    context = _seed(tmp_data_dir)
+    _, message = recap_([], ParsedFilter(), _mod(period), context=context, cfg=_cfg())
+    written = next(iter((context / "recaps").glob(f"recap-{period}-*.md")))
+    return written.read_text(encoding="utf-8"), message
+
+
+def test_recap_reports_total_tracked(tmp_data_dir, monkeypatch):
+    text, _ = _recap(tmp_data_dir, monkeypatch)
+    assert "## Time — 4:30" in text
+
+
+def test_recap_rolls_up_by_kind(tmp_data_dir, monkeypatch):
+    text, _ = _recap(tmp_data_dir, monkeypatch)
+    section = text.split("**By kind**")[1].split("**By project**")[0]
+    assert "solo — 2:50" in section
+    assert "junk — 0:25" in section
+
+
+def test_recap_rolls_up_by_project(tmp_data_dir, monkeypatch):
+    text, _ = _recap(tmp_data_dir, monkeypatch)
+    section = text.split("**By project**")[1]
+    assert "acme.parse — 2:50" in section
+    assert "(none) — 0:25" in section
+
+
+def test_day_recap_includes_the_timeline(tmp_data_dir, monkeypatch):
+    text, _ = _recap(tmp_data_dir, monkeypatch)
+    assert "**Timeline**" in text
+    assert "09:00–09:30 (0:30) meeting" in text
+
+
+def test_week_recap_has_rollups_but_no_timeline(tmp_data_dir, monkeypatch):
+    text, _ = _recap(tmp_data_dir, monkeypatch, period="week")
+    assert "**By kind**" in text
+    assert "**Timeline**" not in text
+
+
+def test_recap_omits_the_time_section_when_nothing_is_logged(tmp_data_dir, monkeypatch):
+    real = datetime
+
+    class Fake(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2026, 8, 29, 18, 0)
+
+    monkeypatch.setattr(commands, "datetime", Fake)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    context = tmp_data_dir / "default"
+    context.mkdir(parents=True, exist_ok=True)
+    recap_([], ParsedFilter(), _mod("day"), context=context, cfg=_cfg())
+    text = next(iter((context / "recaps").glob("recap-day-*.md"))).read_text(encoding="utf-8")
+    assert "## Time" not in text
+
+
+def test_recap_excludes_rows_outside_the_period(tmp_data_dir, monkeypatch):
+    from task import storage
+    from task.models import LoggedEvent
+
+    context = tmp_data_dir / "default"
+    context.mkdir(parents=True, exist_ok=True)
+    old = _e(kind="solo", from_=_at(9, day=20), til=_at(17, day=20))
+    storage.append_event(context, LoggedEvent(entry_id=old.uuid, snapshot=old))
+    for entry in _a_day():
+        storage.append_event(context, LoggedEvent(entry_id=entry.uuid, snapshot=entry))
+
+    real = datetime
+
+    class Fake(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2026, 8, 29, 18, 0)
+
+    monkeypatch.setattr(commands, "datetime", Fake)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    recap_([], ParsedFilter(), _mod("day"), context=context, cfg=_cfg())
+    text = next(iter((context / "recaps").glob("recap-day-*.md"))).read_text(encoding="utf-8")
+    assert "## Time — 4:30" in text  # the 20 Aug row is not counted

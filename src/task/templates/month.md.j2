@@ -29,3 +29,19 @@
 {% else %}
 *Nothing completed this month.*
 {% endif %}
+{% if total_tracked_in_period > 0 %}
+
+## Time — {{ total_tracked_in_period | hm }}
+
+**By kind**
+
+{% for kind, seconds in time_by_kind.items() %}
+- {{ kind }} — {{ seconds | hm }}
+{% endfor %}
+
+**By project**
+
+{% for project, seconds in time_by_project.items() %}
+- {{ project or '(none)' }} — {{ seconds | hm }}
+{% endfor %}
+{% endif %}

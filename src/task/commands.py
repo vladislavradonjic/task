@@ -804,6 +804,46 @@ def _load_template(period: str, cfg) -> str:
     return (_res_files("task") / "templates" / f"{period}.md.j2").read_text(encoding="utf-8")
 
 
+def _hm(seconds) -> str:
+    """Jinja filter: seconds (or a timedelta) as H:MM, so templates stay readable."""
+    if hasattr(seconds, "total_seconds"):
+        seconds = seconds.total_seconds()
+    total = int(seconds or 0)
+    return f"{total // 3600}:{(total % 3600) // 60:02d}"
+
+
+def _timesheet_for_period(context: Path, first_day, last_day, cfg):
+    """Timesheet rows whose logical day falls in the period, plus the two rollups.
+
+    Rows are flattened to dicts rather than passed as ResolvedEntry, so templates say
+    `row.kind` instead of `row.entry.kind`.
+    """
+    from task.storage import load_entries
+    from task.timesheet import resolve, rollup
+
+    day_starts_at = cfg.timesheet.day_starts_at
+    resolved = [
+        r for r in resolve(load_entries(context), day_starts_at)
+        if r.day is not None and first_day <= r.day <= last_day
+    ]
+    rows = [
+        {
+            "day": r.day,
+            "start": r.start,
+            "end": r.end,
+            "duration_s": r.duration.total_seconds() if r.duration else 0.0,
+            "kind": r.entry.kind,
+            "project": r.entry.project,
+            "description": r.entry.description,
+            "open": r.is_open,
+        }
+        for r in resolved
+    ]
+    by_kind = {k: v.total_seconds() for k, v in rollup(resolved, "kind").items()}
+    by_project = {p: v.total_seconds() for p, v in rollup(resolved, "project").items()}
+    return rows, by_kind, by_project, sum(by_kind.values())
+
+
 def recap_(
     tasks: list[Task],
     filter_args: ParsedFilter,
@@ -847,10 +887,15 @@ def recap_(
     today_list = [t for t in tasks if "today" in t.tags and t.status in ("pending", "waiting")] if period == "day" else []
     week_list = [t for t in tasks if "week" in t.tags and t.status in ("pending", "waiting")] if period == "week" else []
 
+    rows, by_kind, by_project, total_s = _timesheet_for_period(
+        context, period_start.date(), period_end.date(), cfg
+    )
+
     template_text = _load_template(period, cfg)
 
     from jinja2 import Environment
     env = Environment(trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True)
+    env.filters["hm"] = _hm
     content = env.from_string(template_text).render(
         date=period_date,
         period=period,
@@ -859,6 +904,10 @@ def recap_(
         due_in_period=due_in_period,
         overdue_in_period=overdue_in_period,
         done_in_period=done_in_period,
+        rows_in_period=rows,
+        time_by_kind=by_kind,
+        time_by_project=by_project,
+        total_tracked_in_period=total_s,
     )
 
     out_dir = Path(cfg.recap.output_dir).expanduser() if cfg.recap.output_dir else context / "recaps"

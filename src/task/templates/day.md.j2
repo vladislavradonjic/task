@@ -36,3 +36,28 @@
 {% else %}
 *Nothing completed today.*
 {% endif %}
+{% if total_tracked_in_period > 0 %}
+
+## Time — {{ total_tracked_in_period | hm }}
+
+**By kind**
+
+{% for kind, seconds in time_by_kind.items() %}
+- {{ kind }} — {{ seconds | hm }}
+{% endfor %}
+
+**By project**
+
+{% for project, seconds in time_by_project.items() %}
+- {{ project or '(none)' }} — {{ seconds | hm }}
+{% endfor %}
+{% endif %}
+{% if rows_in_period %}
+
+**Timeline**
+
+{% for row in rows_in_period %}
+- {{ row.start.strftime('%H:%M') }}–{% if row.open %}?{% else %}{{ row.end.strftime('%H:%M') }}{% endif %} ({{ row.duration_s | hm }}) {{ row.kind }}{% if row.project %} · {{ row.project }}{% endif %}{% if row.description %} — {{ row.description }}{% endif %}
+
+{% endfor %}
+{% endif %}
