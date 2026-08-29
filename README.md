@@ -1,12 +1,21 @@
-# task
+# tsk
 
-Personal [taskwarrior](https://taskwarrior.org/) clone in Python, primarily for use on Windows.
+A personal [taskwarrior](https://taskwarrior.org/) clone in Python, with a built-in
+timesheet. Runs on Linux and on Windows; the interactive mode is the primary interface
+on locked-down Windows machines, where per-process startup cost is punitive.
+
+Full command reference: **[manual.md](manual.md)**.
 
 ## Status
 
-Feature-complete for personal use. Commands: `add`, `list`, `done`, `delete`,
-`modify`, `query`, `context`, `start`/`stop`/`log`, `today`, `week`, `recap`,
-`undo`, `help`.
+Feature-complete for personal use.
+
+**Tasks** — `add`, `list`, `modify`, `done`, `delete`, `depends`, `blocks`, `today`,
+`week`, `tags`, `projects`, `query`, `recap`, `undo`
+
+**Timesheet** — `log`, `day`
+
+**Housekeeping** — `context`, `init`, `rebuild`, `help`, `run`
 
 ## Requirements
 
@@ -20,37 +29,51 @@ Feature-complete for personal use. Commands: `add`, `list`, `done`, `delete`,
     uv sync
     uv run tsk <args>
 
-**To install on a machine** (puts `tsk` in PATH):
+**On another machine** (puts `tsk` on PATH):
 
-    uv build                                        # produces dist/task-1.0.0-py3-none-any.whl
-    scp dist/task-*.whl user@machine:~             # or USB, shared drive, etc.
-    uv tool install ~/task-1.0.0-py3-none-any.whl  # on target machine
+    uv build                      # produces dist/task-<version>-py3-none-any.whl
 
-To update: rebuild, copy, and reinstall with `--force`.
+Get the wheel across — email attachment, USB, shared drive — then on the target machine:
 
-## Sync
+    uv tool install ~/task-<version>-py3-none-any.whl
 
-Sync is git-based, manual. The runtime never invokes git — you pull before working
-and push after.
+The wheel is ~30 KB and carries its own recap templates. Dependencies are resolved from
+PyPI at install time, so the target machine needs an index it can reach; nothing else
+travels. To update, rebuild, copy, and reinstall with `--force`.
 
-**Setup** (per context you want to sync):
+## Quick start
 
-    git -C <data_dir>/work init
-    git -C <data_dir>/work remote add origin <remote>
+    tsk init
+    tsk add write the parser project:acme due:tomorrow priority:H
+    tsk list
+    tsk 1 done
 
-`tsk context create` writes `.gitattributes` (`events.jsonl merge=union`) and
-`.gitignore` (`tasks.json`) automatically. For an existing context, add them manually.
+Log where the time actually went:
 
-**Workflow:**
+    tsk log standup kind:meeting project:internal from:9:00 til:9:30
+    tsk log write the parser kind:solo project:acme task:1 til:11:20
+    tsk day
 
-    git -C <data_dir>/work pull          # before starting work
-    tsk add Fix parser bug               # appends to events.jsonl
-    git -C <data_dir>/work add -A
-    git -C <data_dir>/work commit -m "snapshot"
-    git -C <data_dir>/work push
+Both together, refreshed after every command:
 
-`merge=union` resolves concurrent edits to `events.jsonl` by keeping all appended
-lines. The runtime sorts events by timestamp on load, so line order doesn't matter.
+    tsk run
 
-Don't sync `state.json` or `config.toml` — active context and user prefs are
-per-machine.
+## Interactive mode
+
+`tsk run` opens a prompt where commands are typed without the leading `tsk`. It pays
+Python's import cost once per session instead of once per command, which matters when
+security tooling scans every file read. The screen shows the task list and today's
+timesheet, re-rendered after each command.
+
+Everything available in one-shot mode works identically inside it — there is a test that
+runs the same script through both and asserts the resulting event logs are identical.
+
+## Where things live
+
+`tsk init` creates a data directory: `~/.local/share/task` on Linux,
+`%LOCALAPPDATA%\task` on Windows. Override with `TASK_DATA_DIR`.
+
+Inside, each context is its own subdirectory holding `events.jsonl` — an append-only log
+that is the single source of truth — plus `tasks.json` and `entries.json`, which are
+disposable caches rebuilt from the log on demand. See [manual.md](manual.md#files) for
+the layout and `tsk rebuild` for recovery.
