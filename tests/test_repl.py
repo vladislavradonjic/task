@@ -1,0 +1,313 @@
+"""REPL behaviour: parity with one-shot mode, and the shell-layer wiring around it.
+
+The command functions are pure and covered elsewhere; what needs testing here is the
+loop in cli.py — which context it writes to, when it reloads, and how it reports errors.
+"""
+
+import json
+import re
+
+import pytest
+
+from task import cli, commands, storage
+from task.models import ParsedFilter, ParsedModification
+
+
+def _init(tmp_data_dir):
+    commands.init_(ParsedFilter(), ParsedModification())
+    return tmp_data_dir
+
+
+def _drive(monkeypatch, lines):
+    """Run the REPL over a scripted set of input lines."""
+    supplied = iter(lines)
+
+    def fake_input(prompt=""):
+        try:
+            return next(supplied)
+        except StopIteration:
+            raise EOFError
+    monkeypatch.setattr("builtins.input", fake_input)
+
+
+def _events(context):
+    path = context / "events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _normalise(events):
+    """Strip identity and timing so two runs of the same script can be compared."""
+    seen: dict = {}
+    def ident(value):
+        return seen.setdefault(value, f"U{len(seen)}")
+
+    out = []
+    for event in events:
+        blob = json.dumps(event, sort_keys=True)
+        blob = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", lambda m: ident(m.group(0)), blob)
+        blob = re.sub(r'"\d{4}-\d\d-\d\dT[\d:.]+"', '"TS"', blob)
+        blob = re.sub(r'"duration_s": [\d.]+', '"duration_s": 0', blob)
+        out.append(blob)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# context switching — the loop must not cache the context across commands
+# ---------------------------------------------------------------------------
+
+def test_context_use_redirects_later_writes(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [
+        "context create work",
+        "context use work",
+        "add should land in work",
+    ])
+    cli._repl_loop(tmp_data_dir)
+
+    assert _events(tmp_data_dir / "default") == []
+    landed = _events(tmp_data_dir / "work")
+    assert len(landed) == 1
+    assert landed[0]["snapshot"]["description"] == "should land in work"
+
+
+def test_context_use_then_back_again(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [
+        "add in default",
+        "context create work",
+        "context use work",
+        "add in work",
+        "context use default",
+        "add in default again",
+    ])
+    cli._repl_loop(tmp_data_dir)
+
+    default = [e["snapshot"]["description"] for e in _events(tmp_data_dir / "default")]
+    work = [e["snapshot"]["description"] for e in _events(tmp_data_dir / "work")]
+    assert default == ["in default", "in default again"]
+    assert work == ["in work"]
+
+
+def test_bare_context_reports_where_writes_go(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["context create work", "context use work", "context"])
+    cli._repl_loop(tmp_data_dir)
+    assert "work" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# differential parity: the REPL must emit the same events as one-shot mode
+# ---------------------------------------------------------------------------
+
+SCRIPT = [
+    "add write the parser project:work.parse due:tomorrow",
+    "add review the docs project:work",
+    "add unrelated chore",
+    "1 modify priority:H",
+    "2 depends 1",
+    "1 today",
+    "2 week",
+    "1 done",
+    "3 delete",
+    "today",
+    "undo",
+]
+
+
+def test_repl_and_one_shot_produce_identical_events(tmp_path, monkeypatch):
+    one_shot = tmp_path / "one_shot"
+    repl = tmp_path / "repl"
+
+    monkeypatch.setenv("TASK_DATA_DIR", str(one_shot))
+    commands.init_(ParsedFilter(), ParsedModification())
+    for line in SCRIPT:
+        monkeypatch.setattr("sys.argv", ["tsk", *line.split()])
+        cli.main()
+
+    monkeypatch.setenv("TASK_DATA_DIR", str(repl))
+    commands.init_(ParsedFilter(), ParsedModification())
+    _drive(monkeypatch, list(SCRIPT))
+    cli._repl_loop(repl)
+
+    assert _normalise(_events(repl / "default")) == _normalise(_events(one_shot / "default"))
+
+
+# ---------------------------------------------------------------------------
+# loop control and command gating
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("word", ["exit", "quit"])
+def test_exit_words_leave_the_loop(tmp_data_dir, monkeypatch, word):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [word, "add never runs"])
+    cli._repl_loop(tmp_data_dir)
+    assert _events(tmp_data_dir / "default") == []
+
+
+def test_eof_leaves_the_loop(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [])
+    cli._repl_loop(tmp_data_dir)  # must return rather than raise
+
+
+def test_run_is_rejected_inside_the_repl(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["run"])
+    cli._repl_loop(tmp_data_dir)
+    assert "Already in the REPL" in capsys.readouterr().err
+
+
+def test_init_is_rejected_inside_the_repl(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["init"])
+    cli._repl_loop(tmp_data_dir)
+    assert "not available in the REPL" in capsys.readouterr().err
+
+
+def test_unrecognised_line_names_the_line_not_the_first_token(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["project:work lst"])
+    cli._repl_loop(tmp_data_dir)
+    err = capsys.readouterr().err
+    assert "project:work lst" in err
+    assert "Unknown command: 'project:work'" not in err
+
+
+def test_blank_lines_are_ignored(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["", "   ", "add real task"])
+    cli._repl_loop(tmp_data_dir)
+    assert len(_events(tmp_data_dir / "default")) == 1
+
+
+def test_unbalanced_quotes_report_a_parse_error(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ['add "unclosed'])
+    cli._repl_loop(tmp_data_dir)
+    assert "Parse error" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# error reporting
+# ---------------------------------------------------------------------------
+
+def test_command_errors_do_not_kill_the_loop(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["1 modify due:notadate", "add still alive"])
+    cli._repl_loop(tmp_data_dir)
+    assert len(_events(tmp_data_dir / "default")) == 1
+
+
+def test_task_debug_prints_a_traceback(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    monkeypatch.setenv("TASK_DEBUG", "1")
+    monkeypatch.setattr(commands, "add_", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    _drive(monkeypatch, ["add anything"])
+    cli._repl_loop(tmp_data_dir)
+    assert "Traceback" in capsys.readouterr().err
+
+
+def test_without_task_debug_only_one_line_is_printed(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    monkeypatch.delenv("TASK_DEBUG", raising=False)
+    monkeypatch.setattr(commands, "add_", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    _drive(monkeypatch, ["add anything"])
+    cli._repl_loop(tmp_data_dir)
+    err = capsys.readouterr().err.strip()
+    assert err == "RuntimeError: boom"
+
+
+# ---------------------------------------------------------------------------
+# config reload
+# ---------------------------------------------------------------------------
+
+def test_config_edits_are_picked_up_without_restarting(tmp_data_dir):
+    _init(tmp_data_dir)
+    config = tmp_data_dir / "config.toml"
+    config.write_text("[time_tracking]\nstale_threshold_hours = 8\n", encoding="utf-8")
+    cfg_a, stamp_a = cli._load_cfg(tmp_data_dir)
+    assert cfg_a.time_tracking.stale_threshold_hours == 8
+
+    config.write_text("[time_tracking]\nstale_threshold_hours = 2\n", encoding="utf-8")
+    cfg_b, stamp_b = cli._load_cfg(tmp_data_dir, cfg_a, stamp_a)
+    assert cfg_b.time_tracking.stale_threshold_hours == 2
+    assert stamp_b != stamp_a
+
+
+def test_config_is_not_reparsed_when_unchanged(tmp_data_dir):
+    _init(tmp_data_dir)
+    (tmp_data_dir / "config.toml").write_text("[list]\nsort = \"urgency\"\n", encoding="utf-8")
+    cfg_a, stamp_a = cli._load_cfg(tmp_data_dir)
+    cfg_b, stamp_b = cli._load_cfg(tmp_data_dir, cfg_a, stamp_a)
+    assert cfg_b is cfg_a
+    assert stamp_b == stamp_a
+
+
+# ---------------------------------------------------------------------------
+# one-shot entry point: tracebacks stay off the terminal unless asked for
+# ---------------------------------------------------------------------------
+
+def test_main_reports_unexpected_errors_on_one_line(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    monkeypatch.delenv("TASK_DEBUG", raising=False)
+    monkeypatch.setattr(cli, "_main", lambda: (_ for _ in ()).throw(RuntimeError("disk on fire")))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err.strip() == "RuntimeError: disk on fire"
+
+
+def test_main_reraises_under_task_debug(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    monkeypatch.setenv("TASK_DEBUG", "1")
+    monkeypatch.setattr(cli, "_main", lambda: (_ for _ in ()).throw(RuntimeError("disk on fire")))
+    with pytest.raises(RuntimeError):
+        cli.main()
+
+
+def test_main_passes_through_deliberate_exits(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    monkeypatch.setattr(cli, "_main", lambda: (_ for _ in ()).throw(SystemExit(2)))
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == 2
+
+
+def test_corrupt_cache_does_not_crash_the_cli(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    monkeypatch.setattr("sys.argv", ["tsk", "add", "alpha"])
+    cli.main()
+    (tmp_data_dir / "default" / "tasks.json").write_text("{ truncated", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["tsk", "list"])
+    cli.main()
+    assert "alpha" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# rebuild
+# ---------------------------------------------------------------------------
+
+def test_rebuild_restores_the_cache_from_the_log(tmp_data_dir, monkeypatch):
+    _init(tmp_data_dir)
+    monkeypatch.setattr("sys.argv", ["tsk", "add", "from the log"])
+    cli.main()
+    (tmp_data_dir / "default" / "tasks.json").unlink()
+
+    _, message = commands.rebuild_(ParsedFilter(), ParsedModification())
+    assert "Rebuilt 1 task" in message
+    assert storage.load_tasks(tmp_data_dir / "default")[0].description == "from the log"
+
+
+def test_rebuild_is_a_no_op_on_an_empty_store(tmp_data_dir):
+    _init(tmp_data_dir)
+    _, message = commands.rebuild_(ParsedFilter(), ParsedModification())
+    assert "Rebuilt 0 task" in message
+
+
+def test_rebuild_in_the_repl_rerenders(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["add alpha", "rebuild"])
+    cli._repl_loop(tmp_data_dir)
+    assert "Rebuilt 1 task" in capsys.readouterr().out
