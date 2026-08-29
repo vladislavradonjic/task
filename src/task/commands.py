@@ -5,16 +5,15 @@ import json
 import re
 import shutil
 import sys
-from collections import defaultdict, deque
 from datetime import date as _date, datetime, timedelta as _timedelta
 from pathlib import Path
 from uuid import UUID
 
 from rich.console import Console
 from rich.table import Table
-from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, StartedEvent, StoppedEvent, Task, UpdatedEvent, UndoneEvent
+from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, Task, UpdatedEvent, UndoneEvent
 from task.storage import active_context, append_event, assign_display_ids, data_dir as get_data_dir, effective_events, load_events, rebuild_tasks, save_snapshot
-from task.dates import parse_date, parse_duration_seconds
+from task.dates import parse_date
 from task.urgency import compute_urgency
 
 
@@ -159,7 +158,7 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
     show_project = any("project" in t.properties for t in visible)
     show_urgency = any(urgency_scores.get(t.uuid, 0.0) != 0.0 for t in visible)
     has_flags = any(
-        "today" in t.tags or "week" in t.tags or t.start is not None
+        "today" in t.tags or "week" in t.tags
         for t in visible
     )
 
@@ -192,8 +191,7 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
                 list_flag = "w"
             else:
                 list_flag = " "
-            active_flag = ">" if task.start is not None else " "
-            id_cell = f"{id_str}{list_flag}{active_flag}"
+            id_cell = f"{id_str}{list_flag}"
         else:
             id_cell = id_str
         row = [id_cell, task.description]
@@ -220,9 +218,7 @@ def _render_task_table(visible: list[Task], all_tasks: list[Task]) -> None:
             row.append(f"{urgency_scores.get(task.uuid, 0.0):.1f}")
         age_s = max(0.0, (now - task.entry.replace(tzinfo=None)).total_seconds())
         row.append(_fmt_interval(age_s, past=True))
-        if task.start is not None:
-            row_style = "bold"
-        elif task.uuid in blocked_uuids or task.status == "waiting":
+        if task.uuid in blocked_uuids or task.status == "waiting":
             row_style = "dim"
         else:
             row_style = None
@@ -294,7 +290,6 @@ def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
             "due": task.due,
             "wait": task.wait,
             "end": task.end,
-            "start": task.start,
         }
         for k in all_prop_keys:
             row[k] = task.properties.get(k)
@@ -330,122 +325,6 @@ def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
     return [], ""
 
 
-def _auto_stop(task: Task, now: datetime, note: str = "") -> StoppedEvent:
-    duration_s = max(0.0, (now - task.start.replace(tzinfo=None)).total_seconds())
-    return StoppedEvent(task_id=task.uuid, ts=now, duration_s=duration_s, note=note)
-
-
-def start_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
-    """Start time tracking on a task.
-
-    Usage: tsk <id> start [note]
-
-    Only pending tasks are startable. Any currently active task is stopped first.
-    """
-    if modify_args.tags or modify_args.properties:
-        return [], "Tags and properties are not valid on start."
-    matched, err = _match_ids(tasks, filter_args, "started")
-    if err:
-        return [], err
-    if len(matched) > 1:
-        return [], "Can only start one task at a time."
-    task = matched[0]
-    if task.status != "pending":
-        return [], f'Cannot start a {task.status} task; only pending tasks are startable.'
-
-    now = datetime.now()
-    events: list[Event] = []
-    active = next((t for t in tasks if t.start is not None), None)
-    if active is not None:
-        if active.uuid == task.uuid:
-            return [], f'"{task.description}" is already active.'
-        events.append(_auto_stop(active, now))
-
-    events.append(StartedEvent(task_id=task.uuid, ts=now, note=modify_args.description.strip()))
-    return events, f'Started "{task.description}".'
-
-
-def stop_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
-    """Stop time tracking on the active task.
-
-    Usage: tsk [<id>] stop [note]
-
-    Bare form (no id) targets the currently active task.
-    """
-    if modify_args.tags or modify_args.properties:
-        return [], "Tags and properties are not valid on stop."
-    note = modify_args.description.strip()
-    now = datetime.now()
-
-    if not filter_args.ids and not filter_args.tags and not filter_args.properties:
-        active = next((t for t in tasks if t.start is not None), None)
-        if active is None:
-            return [], "No task is currently active."
-        return [_auto_stop(active, now, note)], f'Stopped "{active.description}".'
-
-    matched, err = _match_ids(tasks, filter_args, "stopped")
-    if err:
-        return [], err
-    if len(matched) > 1:
-        return [], "Can only stop one task at a time."
-    task = matched[0]
-    if task.start is None:
-        return [], f'"{task.description}" is not active.'
-    active = next((t for t in tasks if t.start is not None), None)
-    if active and active.uuid != task.uuid:
-        return [], f'"{task.description}" is not the active task.'
-    duration_s = max(0.0, (now - task.start.replace(tzinfo=None)).total_seconds())
-    return [StoppedEvent(task_id=task.uuid, ts=now, duration_s=duration_s, note=note)], f'Stopped "{task.description}".'
-
-
-def log_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
-    """Manually log a time session.
-
-    Usage: tsk <id> log <duration> [at:<end-time>] [note]
-
-    Duration forms: 2h, 30min, 1h30m. at: defaults to now. Future end times refused.
-    Emits a started/stopped pair without affecting the task's active state.
-    """
-    if modify_args.tags or any(k != "at" for k in modify_args.properties):
-        return [], "Only the at: property is valid on log; tags are not allowed."
-    matched, err = _match_ids(tasks, filter_args, "logged")
-    if err:
-        return [], err
-    if len(matched) > 1:
-        return [], "Can only log time for one task at a time."
-    task = matched[0]
-
-    parts = modify_args.description.strip().split()
-    if not parts:
-        return [], 'No duration given. Usage: tsk <id> log <duration> [at:<when>] [note]'
-    try:
-        duration_s = parse_duration_seconds(parts[0])
-    except ValueError as e:
-        return [], f"Invalid duration: {e}"
-    if duration_s <= 0:
-        return [], "Duration must be positive."
-
-    now = datetime.now()
-    at_raw = modify_args.properties.get("at")
-    if at_raw:
-        try:
-            end_time = parse_date(at_raw)
-        except ValueError as e:
-            return [], f"Invalid at: date: {e}"
-    else:
-        end_time = now
-    if end_time.replace(tzinfo=None) > now:
-        return [], "Cannot log a session ending in the future."
-
-    start_time = end_time.replace(tzinfo=None) - _timedelta(seconds=duration_s)
-    note = " ".join(parts[1:])
-
-    return [
-        StartedEvent(task_id=task.uuid, ts=start_time, note=note, affects_active=False),
-        StoppedEvent(task_id=task.uuid, ts=end_time.replace(tzinfo=None), duration_s=duration_s, note=note, affects_active=False),
-    ], f'Logged {parts[0]} for "{task.description}".'
-
-
 def _fmt(tasks: list[Task]) -> str:
     if len(tasks) == 1:
         return f'"{tasks[0].description}"'
@@ -466,11 +345,8 @@ def done_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
     if waiting:
         desc = ", ".join(f'"{t.description}"' for t in waiting)
         return [], f"Task is waiting; clear wait: first: {desc}"
-    now = datetime.now()
     events: list[Event] = []
     for t in matched:
-        if t.start is not None:
-            events.append(_auto_stop(t, now))
         events.append(DoneEvent(task_id=t.uuid))
     return events, f"Marked {_fmt(matched)} done."
 
@@ -483,11 +359,8 @@ def delete_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
     matched, err = _match_ids(tasks, filter_args, "deleted")
     if err:
         return [], err
-    now = datetime.now()
     events: list[Event] = []
     for t in matched:
-        if t.start is not None:
-            events.append(_auto_stop(t, now))
         events.append(DeletedEvent(task_id=t.uuid))
     return events, f"Deleted {_fmt(matched)}."
 
@@ -909,39 +782,6 @@ def _in_period(dt: datetime | None, start: datetime, end: datetime) -> bool:
     return start <= dt.replace(tzinfo=None) <= end
 
 
-def _compute_time_sessions(
-    events: list,
-    period_start: datetime,
-    period_end: datetime,
-) -> tuple[list[dict], dict, float]:
-    """Pair StartedEvent/StoppedEvent and return sessions ending in the period."""
-    open_starts: dict[tuple, deque] = defaultdict(deque)
-    sessions = []
-
-    for event in events:
-        if isinstance(event, StartedEvent):
-            open_starts[(event.task_id, event.affects_active)].append(event)
-        elif isinstance(event, StoppedEvent):
-            key = (event.task_id, event.affects_active)
-            started = open_starts[key].popleft() if open_starts[key] else None
-            stopped_ts = event.ts.replace(tzinfo=None)
-            if period_start <= stopped_ts <= period_end:
-                sessions.append({
-                    "task_id": event.task_id,
-                    "started": started.ts.replace(tzinfo=None) if started else None,
-                    "stopped": stopped_ts,
-                    "duration_s": event.duration_s,
-                    "started_note": started.note if started else "",
-                    "stopped_note": event.note,
-                })
-
-    time_spent: dict[UUID, float] = {}
-    for s in sessions:
-        uid = s["task_id"]
-        time_spent[uid] = time_spent.get(uid, 0.0) + s["duration_s"]
-    return sessions, time_spent, sum(time_spent.values())
-
-
 def _load_template(period: str, cfg) -> str:
     if cfg.recap.template_dir:
         override = Path(cfg.recap.template_dir).expanduser() / f"{period}.md.j2"
@@ -994,11 +834,6 @@ def recap_(
     today_list = [t for t in tasks if "today" in t.tags and t.status in ("pending", "waiting")] if period == "day" else []
     week_list = [t for t in tasks if "week" in t.tags and t.status in ("pending", "waiting")] if period == "week" else []
 
-    raw_events = load_events(context)
-    sessions_in_period, time_spent_in_period, total_seconds_in_period = _compute_time_sessions(
-        effective_events(raw_events), period_start, period_end
-    )
-
     template_text = _load_template(period, cfg)
 
     from jinja2 import Environment
@@ -1011,9 +846,6 @@ def recap_(
         due_in_period=due_in_period,
         overdue_in_period=overdue_in_period,
         done_in_period=done_in_period,
-        time_spent_in_period=time_spent_in_period,
-        total_seconds_in_period=total_seconds_in_period,
-        sessions_in_period=sessions_in_period,
     )
 
     out_dir = Path(cfg.recap.output_dir).expanduser() if cfg.recap.output_dir else context / "recaps"

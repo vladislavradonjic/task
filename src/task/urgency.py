@@ -11,7 +11,6 @@ _COEFF = {
     "overdue":        12.0,
     "approaching_due": 12.0,  # max at due date; linear from 0 at 14 days out
     "age":             2.0,   # max contribution at 365 days
-    "active":          4.0,
     "blocking":        8.0,
     "blocked":        -5.0,
     "waiting":        -5.0,
@@ -47,9 +46,6 @@ def _base_score(task: Task, g, now: datetime) -> float:
     entry = task.entry.replace(tzinfo=None)
     age_days = max(0.0, (now_naive - entry).total_seconds() / 86400)
     score += _COEFF["age"] * min(age_days / 365.0, 1.0)
-
-    if task.start is not None:
-        score += _COEFF["active"]
 
     if g.out_degree(task.uuid) > 0:
         score += _COEFF["blocking"]

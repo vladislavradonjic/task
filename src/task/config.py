@@ -11,19 +11,13 @@ class RecapConfig(BaseModel):
     template_dir: str | None = None
 
 
-class TimeTrackingConfig(BaseModel):
-    stale_threshold_hours: int = 8
-
-
 class Config(BaseModel):
     list: ListConfig = ListConfig()
     recap: RecapConfig = RecapConfig()
-    time_tracking: TimeTrackingConfig = TimeTrackingConfig()
 
 
 _LIST_KEYS = {"sort"}
 _RECAP_KEYS = {"output_dir", "template_dir"}
-_TIME_TRACKING_KEYS = {"stale_threshold_hours"}
 
 
 def load_config(data_dir: Path) -> Config:
@@ -40,9 +34,4 @@ def load_config(data_dir: Path) -> Config:
         kwargs["list"] = ListConfig(**{k: v for k, v in data["list"].items() if k in _LIST_KEYS})
     if "recap" in data:
         kwargs["recap"] = RecapConfig(**{k: v for k, v in data["recap"].items() if k in _RECAP_KEYS})
-    if "time_tracking" in data:
-        kwargs["time_tracking"] = TimeTrackingConfig(
-            **{k: v for k, v in data["time_tracking"].items() if k in _TIME_TRACKING_KEYS}
-        )
-
     return Config(**kwargs)

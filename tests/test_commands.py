@@ -176,7 +176,7 @@ def test_list_flag_today(capsys):
     assign_display_ids(tasks)
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
-    assert "1d " in captured.out
+    assert "1d" in captured.out
 
 
 def test_list_flag_week(capsys):
@@ -184,7 +184,7 @@ def test_list_flag_week(capsys):
     assign_display_ids(tasks)
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
-    assert "1w " in captured.out
+    assert "1w" in captured.out
 
 
 def test_list_flag_both_today_and_week(capsys):
@@ -192,16 +192,7 @@ def test_list_flag_both_today_and_week(capsys):
     assign_display_ids(tasks)
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
-    assert "1* " in captured.out
-
-
-def test_list_flag_active(capsys):
-    from datetime import datetime
-    tasks = [Task(description="active", start=datetime.now())]
-    assign_display_ids(tasks)
-    _, _ = list_(tasks, ParsedFilter(), ParsedModification())
-    captured = capsys.readouterr()
-    assert "1 >" in captured.out
+    assert "1*" in captured.out
 
 
 def test_list_flag_omitted_when_no_task_has_flag(capsys):
@@ -217,21 +208,16 @@ def test_list_flag_omitted_when_no_task_has_flag(capsys):
 
 
 def test_list_flag_unflagged_task_gets_spaces_when_others_have_flags(capsys):
-    from datetime import datetime
     tasks = [
-        Task(description="active", start=datetime.now()),
+        Task(description="flagged", tags=["today"]),
         Task(description="plain"),
     ]
     assign_display_ids(tasks)
     _, _ = list_(tasks, ParsedFilter(), ParsedModification())
     captured = capsys.readouterr()
-    # unflagged task gets two-space suffix for alignment
-    assert "2  " in captured.out
+    assert "1d" in captured.out
+    assert "2 " in captured.out
 
-
-# ---------------------------------------------------------------------------
-# list_ — urgency column and sort order
-# ---------------------------------------------------------------------------
 
 def test_list_shows_urgency_column_when_nonzero(capsys):
     tasks = [Task(description="tagged", tags=["bug"])]

@@ -73,12 +73,6 @@ def test_urgency_age_half_year():
     assert scores[t.uuid] == pytest.approx(expected, abs=0.01)
 
 
-def test_urgency_active():
-    t = _task(start=_now())
-    scores = compute_urgency([t], now=_now())
-    assert scores[t.uuid] == pytest.approx(_COEFF["active"], abs=0.01)
-
-
 def test_urgency_waiting():
     t = _task(status="waiting")
     scores = compute_urgency([t], now=_now())

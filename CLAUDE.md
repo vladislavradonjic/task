@@ -50,8 +50,8 @@ machine's data has no backup and no remote event history to restore from**, so s
   REPL and one-shot mode emit identical events for the same script. Keep it green.
 
 Commands: `add`, `list`, `query`, `modify`, `done`, `delete`, `depends`, `blocks`,
-`start`/`stop`/`log`, `today`, `week`, `tags`, `projects`, `recap`, `undo`, `context`,
-`init`, `help`, `run`, `rebuild`.
+`today`, `week`, `tags`, `projects`, `recap`, `undo`, `context`, `init`, `help`, `run`,
+`rebuild`. Time tracking was removed in v1.4; see `docs/timesheet.md` for what replaces it.
 
 ## Tooling
 
@@ -88,7 +88,10 @@ plain ancestor of `master` with nothing unique.
   `config.toml` + per-context subdirs each with `meta.json` / `events.jsonl` (canonical) /
   `tasks.json` (cache) / `recaps/`), atomicity, undo, schema versions, `init` behavior.
 - `docs/contexts.md` — context concept, isolation guarantee, `context` command surface.
-- `docs/time-tracking.md` — single-active model, `start`/`stop`/`log`, auto-stop, stale sessions.
+- `docs/timesheet.md` — **the time model going forward.** Day-timeline entries, separate
+  entity from `Task`, derived start times, letter addressing, kinds, shortcuts.
+- `docs/time-tracking.md` — **superseded** by `timesheet.md`. Describes the `start`/`stop`/`log`
+  session model being removed; kept only to explain legacy events in old logs.
 - `docs/list.md` — `list` rendering: default visible set, data-driven columns, flag suffix,
   `rich.Table` wrap policy, color.
 - `docs/urgency.md` — urgency factors and coefficients, topological bump, never stored.
@@ -132,8 +135,10 @@ plain ancestor of `master` with nothing unique.
   that bumps blockers above blockees.
 - Contexts are a storage partition, not a task field — each context is its own data
   directory and the runtime never reads two in one invocation.
-- "Active" (time tracking) is orthogonal to status: `start: datetime | None` plus
-  `started`/`stopped` events. Single-active per context; only `pending` is startable.
+- **No time tracking on `Task`.** `start`/`stop`/`log`, `Task.start`, auto-stop, and stale
+  sessions were removed in v1.4. `StartedEvent`/`StoppedEvent` remain in the discriminated
+  union so pre-v1.4 logs still parse, but they replay as no-ops (they simply fall through
+  `apply_event`) and are surfaced nowhere. The replacement is `docs/timesheet.md`.
 - `done` is reachable only from `pending`. Marking a `waiting` task done is refused — clear
   `wait` via `modify wait:` first.
 - `list` shows pending always and waiting only when fewer than 10 pending tasks exist;

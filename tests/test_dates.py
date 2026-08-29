@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timedelta
 
-from task.dates import parse_date
+from task.dates import parse_date, parse_duration_seconds
 
 
 # April 15 2026 is a Wednesday (weekday=2)
@@ -188,3 +188,40 @@ def test_invalid_raises_value_error():
 def test_empty_string_raises():
     with pytest.raises(ValueError):
         parse_date("")
+
+
+# ---------------------------------------------------------------------------
+# parse_duration_seconds
+#
+# Moved here from test_time_tracking.py when start/stop/log were removed in v1.4;
+# the parser itself survives to back the timesheet's `for:<duration>`.
+# ---------------------------------------------------------------------------
+
+def test_duration_hours_only():
+    assert parse_duration_seconds("2h") == 7200
+
+
+def test_duration_minutes_min():
+    assert parse_duration_seconds("30min") == 1800
+
+
+def test_duration_minutes_m():
+    assert parse_duration_seconds("45m") == 2700
+
+
+def test_duration_combined():
+    assert parse_duration_seconds("1h30m") == 5400
+
+
+def test_duration_combined_min():
+    assert parse_duration_seconds("1h30min") == 5400
+
+
+def test_duration_invalid():
+    with pytest.raises(ValueError, match="unrecognized duration"):
+        parse_duration_seconds("notaduration")
+
+
+def test_duration_negative_not_supported():
+    with pytest.raises(ValueError):
+        parse_duration_seconds("-1h")

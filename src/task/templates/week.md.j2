@@ -36,13 +36,3 @@
 {% else %}
 *Nothing completed this week.*
 {% endif %}
-{% if total_seconds_in_period > 0 %}
-
-## Time
-
-**Total:** {{ (total_seconds_in_period // 3600)|int }}h {{ ((total_seconds_in_period % 3600) // 60)|int }}m
-
-{% for s in sessions_in_period %}
-- {% if s.started %}{{ s.started.strftime('%H:%M') }}–{% endif %}{{ s.stopped.strftime('%H:%M') }} ({{ (s.duration_s // 3600)|int }}h {{ ((s.duration_s % 3600) // 60)|int }}m){% if s.stopped_note %} — {{ s.stopped_note }}{% endif %}
-{% endfor %}
-{% endif %}

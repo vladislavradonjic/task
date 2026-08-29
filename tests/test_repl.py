@@ -226,13 +226,13 @@ def test_without_task_debug_only_one_line_is_printed(tmp_data_dir, monkeypatch, 
 def test_config_edits_are_picked_up_without_restarting(tmp_data_dir):
     _init(tmp_data_dir)
     config = tmp_data_dir / "config.toml"
-    config.write_text("[time_tracking]\nstale_threshold_hours = 8\n", encoding="utf-8")
+    config.write_text('[list]\nsort = "entry"\n', encoding="utf-8")
     cfg_a, stamp_a = cli._load_cfg(tmp_data_dir)
-    assert cfg_a.time_tracking.stale_threshold_hours == 8
+    assert cfg_a.list.sort == "entry"
 
-    config.write_text("[time_tracking]\nstale_threshold_hours = 2\n", encoding="utf-8")
+    config.write_text('[list]\nsort = "urgency"\n', encoding="utf-8")
     cfg_b, stamp_b = cli._load_cfg(tmp_data_dir, cfg_a, stamp_a)
-    assert cfg_b.time_tracking.stale_threshold_hours == 2
+    assert cfg_b.list.sort == "urgency"
     assert stamp_b != stamp_a
 
 

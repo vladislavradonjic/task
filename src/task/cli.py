@@ -2,54 +2,12 @@ import json
 import os
 import shlex
 import sys
-from datetime import datetime, timedelta
 
 from rich.console import Console
 from task import commands, storage
 from task.config import load_config
 from task.events import apply_event
-from task.models import StoppedEvent
 from task.parse import parse_filter, parse_modification
-
-
-def _fmt_elapsed(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    return f"{h}h {m}m" if h else f"{m}m"
-
-
-def _handle_stale_session(tasks: list, context, threshold_hours: float) -> None:
-    active = next((t for t in tasks if t.start is not None), None)
-    if active is None:
-        return
-    now = datetime.now()
-    elapsed = (now - active.start.replace(tzinfo=None)).total_seconds()
-    if elapsed <= threshold_hours * 3600:
-        return
-    if not sys.stdin.isatty():
-        return  # non-TTY: keep silently
-
-    print(f'\nTask #{active.id} "{active.description}" has been active for {_fmt_elapsed(elapsed)}.')
-    print("Did you actually work that long?")
-    answer = input("[k]eep, [s]top now, stop with [d]uration: ").strip().lower()
-
-    if answer == "s":
-        event = StoppedEvent(task_id=active.uuid, ts=now, duration_s=elapsed, note="")
-        storage.append_event(context, event)
-        apply_event(tasks, event)
-    elif answer.startswith("d"):
-        from task.dates import parse_duration_seconds
-        dur_str = input("Duration (e.g. 2h, 30min, 1h30m): ").strip()
-        try:
-            dur_s = parse_duration_seconds(dur_str)
-        except ValueError as e:
-            print(f"Invalid duration: {e}", file=sys.stderr)
-            return
-        stopped_ts = active.start.replace(tzinfo=None) + timedelta(seconds=dur_s)
-        event = StoppedEvent(task_id=active.uuid, ts=stopped_ts, duration_s=dur_s, note="")
-        storage.append_event(context, event)
-        apply_event(tasks, event)
-    # "k" or anything else: keep
 
 
 def _load_and_prep(context, cfg) -> list:
@@ -94,8 +52,6 @@ def _repl_loop(d) -> None:
     cfg, cfg_stamp = _load_cfg(d)
     context = storage.active_context(d)
 
-    tasks = storage.load_tasks(context)
-    _handle_stale_session(tasks, context, cfg.time_tracking.stale_threshold_hours)
     tasks = _load_and_prep(context, cfg)
     _render_default_list(tasks)
 
@@ -162,7 +118,6 @@ def _repl_loop(d) -> None:
                 continue
 
             tasks = _load_and_prep(context, cfg)
-            _handle_stale_session(tasks, context, cfg.time_tracking.stale_threshold_hours)
 
             if command == "recap":
                 _, message = fn(tasks, parsed_filter, parsed_modification, context=context, cfg=cfg)
@@ -274,8 +229,6 @@ def _main() -> None:
         return
 
     tasks = storage.load_tasks(context)
-
-    _handle_stale_session(tasks, context, cfg.time_tracking.stale_threshold_hours)
 
     transitions = storage.lazy_wait_transitions(tasks)
     for event in transitions:

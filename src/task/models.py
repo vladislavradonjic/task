@@ -31,7 +31,6 @@ class Task(BaseModel):
     end: datetime | None = None
     due: datetime | None = None
     wait: datetime | None = None
-    start: datetime | None = None
     
 
 
@@ -66,12 +65,14 @@ class UpdatedEvent(BaseModel):
     changes: dict[str, FieldChange]
 
 
+# Legacy: emitted by the removed start/stop/log commands. Kept so pre-v1.4 logs still
+# parse; they replay as no-ops (see events.apply_event) and are surfaced nowhere.
 class StartedEvent(BaseModel):
     type: Literal["started"] = "started"
     ts: datetime = Field(default_factory=datetime.now)
     task_id: UUID
     note: str = ""
-    affects_active: bool = True  # False for log entries — records history without changing task.start
+    affects_active: bool = True
 
 
 class StoppedEvent(BaseModel):
@@ -80,7 +81,7 @@ class StoppedEvent(BaseModel):
     task_id: UUID
     duration_s: float
     note: str = ""
-    affects_active: bool = True  # False for log entries
+    affects_active: bool = True
 
 
 class UndoneEvent(BaseModel):
