@@ -22,13 +22,22 @@ def _load_and_prep(context, cfg) -> list:
     return tasks
 
 
-def _render_default_list(tasks: list, message: str = "") -> None:
+def _render_default_list(context, tasks: list, message: str = "") -> None:
+    """The REPL's standing view: today's tasks, then today's timesheet.
+
+    The timesheet lives here rather than behind a command because an unseen sheet does
+    not get filled in — see docs/timesheet.md.
+    """
     Console().clear()
     if message:
         print(message)
     _, msg = commands.list_(tasks, parse_filter([]), parse_modification([]))
     if msg:
         print(msg)
+    entries = storage.load_entries(context)
+    _, day_msg = commands.day_(entries, tasks, parse_filter([]), parse_modification([]))
+    if day_msg:
+        print(day_msg)
 
 
 # Commands that do their own I/O and take no task list (see CLAUDE.md, functional core).
@@ -63,8 +72,12 @@ def _load_cfg(d, cached=None, stamp=None):
     return load_config(d), current
 
 
-def _dispatch_entry_command(fn, context, parsed_filter, parsed_modification) -> str:
-    """Run a timesheet command and persist whatever it returns."""
+def _dispatch_entry_command(fn, context, parsed_filter, parsed_modification):
+    """Run a timesheet command and persist whatever it returns.
+
+    Returns (changed, message); `changed` tells the REPL whether to re-render. `day`
+    emits nothing and prints its own table, so it must not trigger a second render.
+    """
     tasks = storage.load_tasks(context)
     storage.assign_display_ids(tasks)
     entries = storage.load_entries(context)
@@ -74,7 +87,7 @@ def _dispatch_entry_command(fn, context, parsed_filter, parsed_modification) -> 
         entries = apply_entry_event(entries, event)
     if events:
         storage.save_entries_snapshot(context, entries)
-    return message
+    return bool(events), message
 
 
 def _repl_loop(d) -> None:
@@ -83,7 +96,7 @@ def _repl_loop(d) -> None:
     context = storage.active_context(d)
 
     tasks = _load_and_prep(context, cfg)
-    _render_default_list(tasks)
+    _render_default_list(context, tasks)
 
     while True:
         try:
@@ -142,15 +155,19 @@ def _repl_loop(d) -> None:
                 if new_context != context or command in ("undo", "rebuild"):
                     context = new_context
                     tasks = _load_and_prep(context, cfg)
-                    _render_default_list(tasks, message)
+                    _render_default_list(context, tasks, message)
                 elif message:
                     print(message)
                 continue
 
             entry_fn = _entry_command(command, parsed_filter)
             if entry_fn is not None:
-                message = _dispatch_entry_command(entry_fn, context, parsed_filter, parsed_modification)
-                if message:
+                changed, message = _dispatch_entry_command(
+                    entry_fn, context, parsed_filter, parsed_modification)
+                if changed:
+                    tasks = _load_and_prep(context, cfg)
+                    _render_default_list(context, tasks, message)
+                elif message:
                     print(message)
                 continue
 
@@ -169,7 +186,7 @@ def _repl_loop(d) -> None:
             if events:
                 storage.save_snapshot(context, tasks)
                 tasks = _load_and_prep(context, cfg)
-                _render_default_list(tasks, message)
+                _render_default_list(context, tasks, message)
             elif message:
                 print(message)
 
@@ -267,7 +284,7 @@ def _main() -> None:
 
     entry_fn = _entry_command(command, parsed_filter)
     if entry_fn is not None:
-        message = _dispatch_entry_command(entry_fn, context, parsed_filter, parsed_modification)
+        _, message = _dispatch_entry_command(entry_fn, context, parsed_filter, parsed_modification)
         if message:
             print(message)
         return

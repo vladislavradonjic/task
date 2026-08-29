@@ -37,18 +37,29 @@ def _events(context):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+# Only wall-clock fields are masked. Times the script states explicitly — `from_`, `til`,
+# `due` — are left intact, so the comparison really does check that both modes place a
+# timesheet row at the same moment.
+_NONDETERMINISTIC = ("ts", "entry", "end", "undid_ts")
+
+
 def _normalise(events):
-    """Strip identity and timing so two runs of the same script can be compared."""
+    """Strip identity and generated timestamps so two runs can be compared."""
     seen: dict = {}
+
     def ident(value):
         return seen.setdefault(value, f"U{len(seen)}")
 
     out = []
     for event in events:
         blob = json.dumps(event, sort_keys=True)
-        blob = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", lambda m: ident(m.group(0)), blob)
-        blob = re.sub(r'"\d{4}-\d\d-\d\dT[\d:.]+"', '"TS"', blob)
-        blob = re.sub(r'"duration_s": [\d.]+', '"duration_s": 0', blob)
+        blob = re.sub(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            lambda m: ident(m.group(0)),
+            blob,
+        )
+        for field in _NONDETERMINISTIC:
+            blob = re.sub(rf'"{field}": "\d{{4}}-\d\d-\d\dT[\d:.]+"', f'"{field}": "TS"', blob)
         out.append(blob)
     return out
 
@@ -102,6 +113,7 @@ def test_bare_context_reports_where_writes_go(tmp_data_dir, monkeypatch, capsys)
 # ---------------------------------------------------------------------------
 
 SCRIPT = [
+    # tasks
     "add write the parser project:work.parse due:tomorrow",
     "add review the docs project:work",
     "add unrelated chore",
@@ -109,9 +121,19 @@ SCRIPT = [
     "2 depends 1",
     "1 today",
     "2 week",
+    # timesheet — explicit times only, so both runs place rows identically
+    "log standup kind:meeting project:internal from:6:00 til:6:30",
+    "log write the parser kind:solo project:work.parse task:1 til:8:20",
+    "log slack kind:junk til:8:45",
+    "log kind:call project:work til:9:15",
+    "a modify til:7:00",
+    "c delete",
+    "day",
+    # back to tasks, then undo across both tracks
     "1 done",
     "3 delete",
     "today",
+    "undo",
     "undo",
 ]
 
@@ -374,3 +396,56 @@ def test_repl_task_delete_still_targets_tasks(tmp_data_dir, monkeypatch):
     cli._repl_loop(tmp_data_dir)
     tasks = storage.load_tasks(tmp_data_dir / "default")
     assert [t.status for t in tasks] == ["deleted"]
+
+
+# ---------------------------------------------------------------------------
+# the standing view: tasks above, timesheet below
+# ---------------------------------------------------------------------------
+
+def test_default_view_shows_the_timesheet_under_the_tasks(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [
+        "add write the parser",
+        "log standup kind:meeting from:6:00 til:6:30",
+    ])
+    cli._repl_loop(tmp_data_dir)
+    out = capsys.readouterr().out
+    assert out.index("write the parser") < out.index("standup")
+    assert "0:30 tracked" in out
+
+
+def test_logging_a_row_re_renders_the_whole_view(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [
+        "add a task",
+        "log standup kind:meeting from:6:00 til:6:30",
+    ])
+    cli._repl_loop(tmp_data_dir)
+    out = capsys.readouterr().out
+    assert out.count("a task") >= 2  # re-rendered after the log, not just after the add
+
+
+def test_editing_a_row_re_renders(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, [
+        "log standup kind:meeting from:6:00 til:6:30",
+        "a modify til:7:00",
+    ])
+    cli._repl_loop(tmp_data_dir)
+    assert "1:00" in capsys.readouterr().out
+
+
+def test_day_does_not_trigger_a_second_render(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["log standup kind:meeting from:6:00 til:6:30", "day"])
+    cli._repl_loop(tmp_data_dir)
+    out = capsys.readouterr().out
+    # once from the log's re-render, once from `day` itself — not three times
+    assert out.count("06:00") == 2
+
+
+def test_empty_timesheet_still_nudges(tmp_data_dir, monkeypatch, capsys):
+    _init(tmp_data_dir)
+    _drive(monkeypatch, ["add a task"])
+    cli._repl_loop(tmp_data_dir)
+    assert "Nothing logged" in capsys.readouterr().out

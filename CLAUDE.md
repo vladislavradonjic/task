@@ -53,7 +53,13 @@ machine's data has no backup and no remote event history to restore from**, so s
 
 Commands: `add`, `list`, `query`, `modify`, `done`, `delete`, `depends`, `blocks`,
 `today`, `week`, `tags`, `projects`, `recap`, `undo`, `context`, `init`, `help`, `run`,
-`rebuild`. Time tracking was removed in v1.4; see `docs/timesheet.md` for what replaces it.
+`rebuild`, plus the timesheet's `log` and `day` (`docs/timesheet.md`). Session-based time
+tracking was removed in v1.4.
+
+**Two command signature families.** Task commands take `(tasks, filter, modify)`; timesheet
+commands take `(entries, tasks, filter, modify)`. Both are pure. The shell routes the shared
+names `modify`/`delete` on whether the filter carries letters (rows) or digits (tasks);
+`_entry_modify`/`_entry_delete` lead with an underscore so `command_names()` skips them.
 
 ## Tooling
 
