@@ -1,6 +1,7 @@
+import json
+import os
 import shlex
 import sys
-import json
 from datetime import datetime, timedelta
 
 from rich.console import Console
@@ -72,8 +73,26 @@ def _render_default_list(tasks: list, message: str = "") -> None:
         print(msg)
 
 
-def _repl_loop(cfg, context) -> None:
-    known = commands.command_names() - {"run"}
+# Commands that do their own I/O and take no task list (see CLAUDE.md, functional core).
+_SHELL_COMMANDS = {"init", "help", "context", "undo", "rebuild"}
+
+
+def _load_cfg(d, cached=None, stamp=None):
+    """Reload config.toml only when it has changed, so a long REPL picks up edits."""
+    config_file = d / "config.toml"
+    try:
+        current = config_file.stat().st_mtime_ns if config_file.exists() else None
+    except OSError:
+        current = None
+    if cached is not None and current == stamp:
+        return cached, stamp
+    return load_config(d), current
+
+
+def _repl_loop(d) -> None:
+    known = commands.command_names()
+    cfg, cfg_stamp = _load_cfg(d)
+    context = storage.active_context(d)
 
     tasks = storage.load_tasks(context)
     _handle_stale_session(tasks, context, cfg.time_tracking.stale_threshold_hours)
@@ -92,7 +111,7 @@ def _repl_loop(cfg, context) -> None:
 
         if not line:
             continue
-        if line == "exit":
+        if line in ("exit", "quit"):
             break
 
         try:
@@ -112,48 +131,65 @@ def _repl_loop(cfg, context) -> None:
                 break
 
         if command is None:
-            print(f"Unknown command: {args[0]!r}. Type 'help' for available commands.", file=sys.stderr)
+            print(f"No command in {line!r}. Type 'help' for available commands.", file=sys.stderr)
             continue
+        if command == "run":
+            print("Already in the REPL. Use 'exit' or Ctrl-D to leave.", file=sys.stderr)
+            continue
+        if command == "init":
+            print("`init` is not available in the REPL; the store is already initialized.", file=sys.stderr)
+            continue
+
+        # config.toml may have been edited from another window since the last command.
+        cfg, cfg_stamp = _load_cfg(d, cfg, cfg_stamp)
 
         try:
             parsed_filter = parse_filter(filter_args_raw)
             parsed_modification = parse_modification(modify_args_raw)
             fn = getattr(commands, f"{command}_")
 
-            if command in ("init", "help", "context"):
+            if command in _SHELL_COMMANDS:
                 _, message = fn(parsed_filter, parsed_modification)
-                if message:
-                    print(message)
-
-            elif command == "undo":
-                _, message = fn(parsed_filter, parsed_modification)
-                tasks = _load_and_prep(context, cfg)
-                _render_default_list(tasks, message)
-
-            elif command == "recap":
-                tasks = _load_and_prep(context, cfg)
-                _, message = fn(tasks, parsed_filter, parsed_modification, context=context, cfg=cfg)
-                if message:
-                    print(message)
-
-            else:
-                tasks = _load_and_prep(context, cfg)
-                events, message = fn(tasks, parsed_filter, parsed_modification)
-                for event in events:
-                    storage.append_event(context, event)
-                    tasks = apply_event(tasks, event)
-                if events:
-                    storage.save_snapshot(context, tasks)
+                # `context use` changes where every later command writes, so re-resolve
+                # it rather than trusting the value captured at loop entry.
+                new_context = storage.active_context(d)
+                if new_context != context or command in ("undo", "rebuild"):
+                    context = new_context
                     tasks = _load_and_prep(context, cfg)
                     _render_default_list(tasks, message)
                 elif message:
                     print(message)
+                continue
+
+            tasks = _load_and_prep(context, cfg)
+            _handle_stale_session(tasks, context, cfg.time_tracking.stale_threshold_hours)
+
+            if command == "recap":
+                _, message = fn(tasks, parsed_filter, parsed_modification, context=context, cfg=cfg)
+                if message:
+                    print(message)
+                continue
+
+            events, message = fn(tasks, parsed_filter, parsed_modification)
+            for event in events:
+                storage.append_event(context, event)
+                tasks = apply_event(tasks, event)
+            if events:
+                storage.save_snapshot(context, tasks)
+                tasks = _load_and_prep(context, cfg)
+                _render_default_list(tasks, message)
+            elif message:
+                print(message)
 
         except Exception as e:
-            print(str(e), file=sys.stderr)
+            if os.environ.get("TASK_DEBUG") == "1":
+                import traceback
+                traceback.print_exc()
+            else:
+                print(f"{type(e).__name__}: {e}", file=sys.stderr)
 
 
-def main() -> None:
+def _main() -> None:
     args = sys.argv[1:]
     known = commands.command_names()
 
@@ -196,7 +232,7 @@ def main() -> None:
         print("Not initialized. Run `tsk init` first.", file=sys.stderr)
         sys.exit(2)
 
-    state = json.loads(state_file.read_text())
+    state = json.loads(state_file.read_text(encoding="utf-8"))
     if state.get("version") != storage.CURRENT_STATE_VERSION:
         print(
           f"state.json version {state.get('version')} not supported "
@@ -218,7 +254,7 @@ def main() -> None:
         print(f"Context {context.name} not initialized. Run `tsk context list`.", file=sys.stderr)
         sys.exit(1)
 
-    meta = json.loads(meta_file.read_text())
+    meta = json.loads(meta_file.read_text(encoding="utf-8"))
     if meta.get("version") != storage.CURRENT_CONTEXT_VERSION:
         print(
           f"Context meta.json version {meta.get('version')} not supported "
@@ -227,14 +263,14 @@ def main() -> None:
         )
         sys.exit(1)
 
-    if command == "undo":
+    if command in ("undo", "rebuild"):
         _, message = fn(parsed_filter, parsed_modification)
         if message:
             print(message)
         return
 
     if command == "run":
-        _repl_loop(cfg, context)
+        _repl_loop(d)
         return
 
     tasks = storage.load_tasks(context)
@@ -263,6 +299,22 @@ def main() -> None:
     storage.save_snapshot(context, tasks)
     print(message)
 
+
+
+def main() -> None:
+    """Entry point. Keeps tracebacks off the terminal unless TASK_DEBUG=1."""
+    try:
+        _main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        if os.environ.get("TASK_DEBUG") == "1":
+            raise
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

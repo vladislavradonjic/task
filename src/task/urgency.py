@@ -1,8 +1,6 @@
 from datetime import datetime
 from uuid import UUID
 
-import networkx as nx
-
 from task.models import Task
 
 # Default coefficients per urgency.md.
@@ -24,7 +22,7 @@ _COEFF = {
 _TOPO_EPS = 0.001
 
 
-def _base_score(task: Task, g: nx.DiGraph, now: datetime) -> float:
+def _base_score(task: Task, g, now: datetime) -> float:
     score = 0.0
 
     priority = task.properties.get("priority")
@@ -79,6 +77,8 @@ def compute_urgency(tasks: list[Task], now: datetime | None = None) -> dict[UUID
     """
     if now is None:
         now = datetime.now()
+
+    import networkx as nx
 
     active = [t for t in tasks if t.status in ("pending", "waiting")]
     active_uuids = {t.uuid for t in active}

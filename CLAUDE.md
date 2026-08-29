@@ -1,82 +1,187 @@
 # CLAUDE.md
 
-Personal taskwarrior clone in Python 3.12+, primarily for Windows. Author-only project, early scaffolding stage.
+Personal taskwarrior clone (`tsk`) in Python 3.12+. Author-only project, v1.2, feature-complete
+for daily use. The current work is cross-platform hardening, not new features.
+
+## Target platforms — both are first-class
+
+1. **Arch/omarchy Linux** — the development machine. Fast, unconstrained.
+2. **Corporate Windows 11** — heavily locked down. Security tooling scans every file read,
+   so *process startup is expensive*: each `tsk <cmd>` invocation pays ~200 ms of import
+   cost on Linux and multiple seconds there.
+
+**Consequence: the REPL (`tsk run`) is the primary interface on Windows**, because it pays
+import cost once instead of per command. Anything that works in one-shot mode must work
+identically inside the REPL. A feature that is one-shot-only is a bug, not a gap.
+
+The two machines share one event log over git sync, so on-disk bytes must be
+byte-identical across platforms.
+
+## Deployment and data isolation
+
+**The work machine cannot reach GitHub.** Code gets there by emailing a built wheel and
+installing with `uv`. PyPI *is* reachable there, so dependency payload size is not a
+constraint — only the 23 KB app wheel travels, and it already carries the recap templates.
+Dependency weight still costs import latency under AV; see the startup-cost notes.
+
+**The work machine is an isolated universe.** Its task data never leaves it and is never
+synced with this one. Consequences: `docs/sync.md`'s cross-machine git sync is not in use;
+cross-platform byte-identical output is cosmetic rather than critical; and **the work
+machine's data has no backup and no remote event history to restore from**, so self-recovery
+(rebuild from the log, never crash on a corrupt cache) matters more there than anywhere else.
 
 ## Layout
 
-- `src/task/cli.py` — splits argv into `[filter] command [modify]`, dispatches by command name. Discovery introspects `commands.py` for callables ending in `_`.
-- `src/task/commands.py` — command stubs registered by trailing-underscore convention (`add_`, `list_`, `init_`). Trailing `_` avoids collisions with Python builtins like `list`.
-- `tests/` — empty. Roadmap explicitly notes "Try to lead with tests next time."
-- `pyproject.toml` — runtime deps (`networkx`, `polars`, `pydantic`, `python-dateutil`, `rich`); dev deps (`pytest`). Don't add new ones casually.
+- `src/task/cli.py` — imperative shell. Splits argv into `[filter] command [modify]`,
+  resolves state/context, dispatches, appends events, prints. Also holds `_repl_loop`.
+- `src/task/commands.py` — every command, registered by trailing-underscore convention
+  (`add_`, `list_`, `run_`). Trailing `_` avoids collisions with builtins like `list`.
+  Discovery is `command_names()`, which introspects module globals.
+- `src/task/parse.py` — `argv → ParsedFilter` / `ParsedModification`.
+- `src/task/models.py` — `Task`, `Event` (pydantic discriminated union).
+- `src/task/storage.py` — data dir resolution, snapshot read/rebuild, event append.
+- `src/task/events.py` — `apply_event` reducer; per-event inverse logic for `undo`.
+- `src/task/urgency.py` — urgency score + topological blocker bump.
+- `src/task/config.py` — `config.toml` loading.
+- `src/task/dates.py` — date and duration parsing.
+- `src/task/templates/` — Jinja2 recap templates (`day`/`week`/`month`), shipped in the wheel.
+- `tests/` — 310 tests mirroring `src/task/`; `conftest.py` holds shared fixtures.
+  `test_repl.py` covers the REPL loop, including a differential test asserting the
+  REPL and one-shot mode emit identical events for the same script. Keep it green.
+
+Commands: `add`, `list`, `query`, `modify`, `done`, `delete`, `depends`, `blocks`,
+`start`/`stop`/`log`, `today`, `week`, `tags`, `projects`, `recap`, `undo`, `context`,
+`init`, `help`, `run`, `rebuild`.
 
 ## Tooling
 
-- Use `uv run pytest` to run tests and `uv run ruff` for linting/formatting.
+- Run tests with `uv run python -m pytest tests/ -q`. 310 tests, ~0.4 s.
+- Lint with `uvx ruff check src/ tests/` — ruff is **not** a dev dependency, so
+  `uv run ruff` fails. There is no ruff config; the default ruleset reports ~95
+  pre-existing findings (import order, naive datetimes, blind excepts). They are not
+  enforced — don't fix them wholesale, just don't add new ones.
 - Do not activate the venv directly or invoke `.venv/bin/*`.
+- Point `TASK_DATA_DIR` at a scratch directory before running `tsk` by hand — otherwise
+  you write into the author's real task data.
 
-### Planned modules
+## Abandoned work
 
-The implementation will add (per [docs/roadmap.md](docs/roadmap.md) "Project skeleton"):
+The `web-interface` branch added a browser canvas UI. **It was abandoned and deleted**
+on 2026-08-29 (tip was `b786e8a`, never pushed; recoverable with
+`git branch web-interface b786e8a` until git gc prunes it). Don't propose reviving it,
+rebuilding it, or adding a web/GUI surface. The one salvageable piece was commit `590c1dc`,
+which extracted `selection.py` / `query.py` / `graph.py` out of `commands.py` — worth
+redoing from scratch if `commands.py` (1100 lines) needs splitting, but nothing else.
 
-- `parse.py` — tokenizer: `argv → ParsedCommand`
-- `models.py` — `Task`, `Event` (pydantic discriminated union), `ParsedCommand` / `ParsedFilter` / `ParsedModification`
-- `storage.py` — data dir resolution, snapshot read/rebuild, event append
-- `events.py` — `apply_event` reducer; per-event-type inverse logic for `undo`
-- `render.py` — `rich.Table` list rendering (later)
-
-Tests mirror `src/task/` under `tests/`; `conftest.py` holds shared fixtures.
+The `main` branch and `origin/cmd_add` / `origin/cmd_show` are a scrapped first attempt
+(different module layout: `command.py`, `db.py`). `master` restarted from scratch at
+`f33d15d`. `origin/HEAD` still points at `main`, which is dead code. `v1-2-repl` is a
+plain ancestor of `master` with nothing unique.
 
 ## Specs (in `docs/`, gitignored — author-local)
 
-- `docs/parsing.md` — canonical CLI parsing spec: filter/command/modify split, token kinds, dates, dependencies, daily/weekly lists, recap surface, EBNF, examples. Read before changing CLI behavior or proposing new features.
-- `docs/data-model.md` — `Task` pydantic schema, status lifecycle, UUID + ephemeral display ID model, deferred fields.
-- `docs/storage.md` — data dir resolution, on-disk layout (top-level `state.json` + `config.toml` + per-context subdirs each with `meta.json` / `events.jsonl` (canonical) / `tasks.json` (cache) / `recaps/`), atomicity, undo, schema versions, `init` behavior.
-- `docs/contexts.md` — context concept, isolation guarantee, `context` command surface (list/use/create/delete), activation rules.
-- `docs/time-tracking.md` — single-active model (`start` field + `started`/`stopped` events), `start`/`stop`/`log` commands, auto-stop, stale-session handling.
-- `docs/list.md` — `list` rendering: default visible set (pending; waiting if <10 pending), data-driven columns, flag suffix on ID, `rich.Table` wrap policy, color sketch.
-- `docs/urgency.md` — urgency score: factors and default coefficients, topological bump that lifts blockers above blockees, never stored.
-- `docs/sync.md` — git-based sync. Per-context `git init`; `events.jsonl` tracked with `merge=union`; `tasks.json` gitignored and rebuilt from the log on load.
-- `docs/config.md` — user-editable preferences in `<data_dir>/config.toml`. Optional; runtime never writes it.
+- `docs/parsing.md` — canonical CLI parsing spec: filter/command/modify split, token kinds,
+  dates, dependencies, daily/weekly lists, recap surface, EBNF, examples. Read before
+  changing CLI behavior or proposing new features.
+- `docs/data-model.md` — `Task` pydantic schema, status lifecycle, UUID + ephemeral display ID.
+- `docs/storage.md` — data dir resolution, on-disk layout (top-level `state.json` +
+  `config.toml` + per-context subdirs each with `meta.json` / `events.jsonl` (canonical) /
+  `tasks.json` (cache) / `recaps/`), atomicity, undo, schema versions, `init` behavior.
+- `docs/contexts.md` — context concept, isolation guarantee, `context` command surface.
+- `docs/time-tracking.md` — single-active model, `start`/`stop`/`log`, auto-stop, stale sessions.
+- `docs/list.md` — `list` rendering: default visible set, data-driven columns, flag suffix,
+  `rich.Table` wrap policy, color.
+- `docs/urgency.md` — urgency factors and coefficients, topological bump, never stored.
+- `docs/sync.md` — git-based sync. Per-context `git init`; `events.jsonl` tracked with
+  `merge=union`; `tasks.json` gitignored and rebuilt from the log on load.
+- `docs/config.md` — user preferences in `<data_dir>/config.toml`. Runtime never writes it.
 - `docs/recap.md` — recap content rules, output, re-run behavior, Jinja2 templates.
 - `docs/roadmap.md` — done / next / later.
 
 `docs/` is intentionally gitignored. Don't suggest committing it. README.md *is* committed.
 
+## Cross-platform rules (non-obvious, and currently violated in places)
+
+- **Always pass `encoding="utf-8"` explicitly** on every read and write; `newline="\n"` on
+  writes. Windows text mode defaults to cp1252, which cannot encode `č`, `ć`, or `đ` — a
+  task like "počisti bazu" raises `UnicodeEncodeError` inside `append_event` and the task is
+  lost. Every I/O call site already does this; keep new ones consistent.
+- **Never assume a TTY.** Windows console and the Linux terminal differ on clear-screen,
+  ANSI colour, and Unicode box-drawing. `rich` handles most of it; anything outside `rich`
+  is suspect.
+- **Startup imports are a cost on Windows, not a rounding error.** `polars` and `networkx`
+  are imported *inside* the functions that need them (`query_`, `_is_acyclic`,
+  `_build_graph`, `compute_urgency`), following the same idiom as `storage.data_dir()`.
+  Keep them that way, and prefer lazy imports for anything similarly heavy. `import
+  task.cli` is ~90 ms; it was 176 ms with both at module level.
+- Use `pathlib` and `os.replace` for atomic swaps; `Path.rename` fails on Windows when the
+  target exists.
+
 ## Spec conventions worth knowing (non-obvious)
 
-- Tags carry their `+`/`-` sign in the parsed filter/modify structure; sign is semantic (filter: include/exclude; modify: add/remove). On-disk task storage uses bare tag names — see [data-model.md](docs/data-model.md).
+- Tags carry their `+`/`-` sign in the parsed filter/modify structure; sign is semantic
+  (filter: include/exclude; modify: add/remove). On-disk storage uses bare tag names.
 - Property values are opaque to the generic parser; per-type validators interpret them.
-- No comparison operators in property syntax — they collide with shell redirection. Use the `query` command (polars filter expression) for anything beyond exact match.
-- Reserved tags `+today` / `+week` back the daily/weekly list sugar commands; manual tag editing still works.
-- Weekday and month names always resolve to the *next* future occurrence — never today / this month.
-- Bare integers: in the filter section they're IDs (collected into a list); in the modify section they're description words. `depends` / `blocks` validators re-parse the modify description as an ID list.
-- Cycle rejection on dependency add (`networkx` `DiGraph`); urgency calculation does a topo-order pass that bumps blockers above blockees.
-- Contexts are a storage partition, not a task field — each context is its own data directory and the runtime never reads two in one invocation. See `contexts.md`.
-- "Active" (time tracking) is orthogonal to status: `start: datetime | None` field plus `started`/`stopped` events. Single-active per context; only `pending` is startable; `done`/`delete` of an active task auto-stops first. See `time-tracking.md`.
-- `done` is reachable only from `pending`. Marking a `waiting` task done is refused — clear `wait` via `modify wait:` first. The symmetry with `start` (also pending-only) keeps the lifecycle predictable. See `data-model.md`.
-- `list` shows pending always and waiting only when fewer than 10 pending tasks exist; columns are data-driven (rendered only when ≥1 row has a value). See `list.md`.
-- **Errors** print a one-line message to **stderr**; tracebacks are suppressed unless `TASK_DEBUG=1`. Success output goes to **stdout**. **Exit codes**: `0` success, `1` runtime error (I/O, version mismatch, broken state), `2` user error (bad input, refusal-by-design like deleting the active context).
-- **Timezone**: machine-local for all date resolution and "now" computations; stored datetimes are tz-aware ISO-8601 with the local offset preserved. See `data-model.md`.
-- `events.jsonl` is the canonical state; `tasks.json` is a rebuildable cache. Mutations append the event first, then refresh the snapshot. A missing or stale `tasks.json` is recoverable by replaying the log — see `storage.md` and `sync.md`.
-- `modify` / `delete` / `done` with an *empty filter* are no-ops with a clear message. The runtime refuses to mass-affect every task on an unguarded command. See `parsing.md`.
-- `project` is a dotted path by convention. Filter `project:work` is a dot-bounded prefix match (matches `work`, `work.parser`, `work.docs.api`); modify-section assignment is exact. See `parsing.md`.
-- Schema versions: `state.json` and per-context `meta.json` carry `version`. Mismatch on load is fatal — no silent coercion. A future `task migrate` command upgrades through the event log. See `storage.md`.
-- **Functional core, imperative shell.** Command functions in `commands.py` are pure: they take current state + parsed args and return `(list[Event], message: str)`. They never touch disk or print. The shell layer (`cli.py` + storage) appends the events, refreshes the snapshot via `apply_event`, and prints the message. Tests pass known state in and assert on the returned events — no I/O mocks needed.
+- No comparison operators in property syntax — they collide with shell redirection. Use the
+  `query` command (polars filter expression) for anything beyond exact match.
+- Reserved tags `+today` / `+week` back the daily/weekly list sugar commands.
+- Weekday and month names always resolve to the *next* future occurrence — never today.
+- Bare integers: in the filter section they're IDs; in the modify section they're
+  description words. `depends` / `blocks` validators re-parse the modify description as IDs.
+- Cycle rejection on dependency add (`networkx` `DiGraph`); urgency does a topo-order pass
+  that bumps blockers above blockees.
+- Contexts are a storage partition, not a task field — each context is its own data
+  directory and the runtime never reads two in one invocation.
+- "Active" (time tracking) is orthogonal to status: `start: datetime | None` plus
+  `started`/`stopped` events. Single-active per context; only `pending` is startable.
+- `done` is reachable only from `pending`. Marking a `waiting` task done is refused — clear
+  `wait` via `modify wait:` first.
+- `list` shows pending always and waiting only when fewer than 10 pending tasks exist;
+  columns are data-driven (rendered only when ≥1 row has a value).
+- **Errors** print a one-line message to **stderr**; tracebacks are suppressed unless
+  `TASK_DEBUG=1`. Success output goes to **stdout**. **Exit codes**: `0` success, `1`
+  runtime error, `2` user error (bad input, refusal-by-design).
+- **Timezone**: machine-local for all date resolution and "now"; stored datetimes are
+  tz-aware ISO-8601 with the local offset preserved.
+- `events.jsonl` is canonical; `tasks.json` is a rebuildable cache. Mutations append the
+  event first, then refresh the snapshot.
+- `modify` / `delete` / `done` with an *empty filter* are no-ops with a clear message.
+- `project` is a dotted path. Filter `project:work` is a dot-bounded prefix match; modify
+  assignment is exact.
+- Schema versions: `state.json` and per-context `meta.json` carry `version`. Mismatch on
+  load is fatal — no silent coercion. A future `tsk migrate` upgrades through the log.
+- **Functional core, imperative shell.** Command functions in `commands.py` are pure: they
+  take current state + parsed args and return `(list[Event], message: str)`. They never
+  touch disk or print. The shell layer (`cli.py` + storage) appends events, refreshes the
+  snapshot via `apply_event`, and prints. Tests pass known state in and assert on returned
+  events — no I/O mocks. **`context_`, `init_`, `undo_` are the exceptions**: they do their
+  own I/O and take no task list. This is why the REPL dispatch special-cases them — and why
+  mid-session `context use` is currently broken (see below).
 
 ## Working rules
 
-These bias toward caution over speed — for trivial edits, use judgment, not ceremony. Adapted from [Karpathy's guidelines](https://github.com/forrestchang/andrej-karpathy-skills/blob/main/skills/karpathy-guidelines/SKILL.md).
+These bias toward caution over speed — for trivial edits, use judgment, not ceremony.
+Adapted from [Karpathy's guidelines](https://github.com/forrestchang/andrej-karpathy-skills/blob/main/skills/karpathy-guidelines/SKILL.md).
 
-- **Show code before writing it.** Don't edit files under `src/` or `tests/` unless explicitly asked. Propose the code in chat; the user decides whether to implement it themselves, ask me to apply it, or revise it. Doc edits in `docs/` and `CLAUDE.md`, and dependency edits in `pyproject.toml`, follow the normal flow — this rule is about source and tests.
-- **State assumptions before implementing.** If multiple interpretations of the task exist, name them and let me redirect — don't pick silently.
-- **Match the existing style** even where you'd do it differently. Reuse local primitives over inventing new ones.
-- **Surgical scope.** Every changed line should trace to the request. Remove imports/vars *your* changes made unused; mention pre-existing dead code, don't delete it.
-- **Verifiable success criteria.** Restate vague tasks as something checkable (a test, a build, a behavior). Where useful, sketch a brief 2-4 step plan with verifications before starting.
+- **Show code before writing it.** Don't edit files under `src/` or `tests/` unless
+  explicitly asked. Propose the code in chat; the user decides whether to implement it
+  themselves, ask me to apply it, or revise it. Doc edits in `docs/` and `CLAUDE.md`, and
+  dependency edits in `pyproject.toml`, follow the normal flow.
+- **State assumptions before implementing.** If multiple interpretations exist, name them.
+- **Match the existing style** even where you'd do it differently. Reuse local primitives.
+- **Surgical scope.** Every changed line should trace to the request. Remove imports/vars
+  *your* changes made unused; mention pre-existing dead code, don't delete it.
+- **Verifiable success criteria.** Restate vague tasks as something checkable.
 - **Cleanup is part of the change, not a follow-up.** No half-finished implementations.
+- **Don't add dependencies casually.** Every new import is startup cost on the Windows box.
 
 ## Working style
 
-- When there's a real design choice, propose tradeoffs before applying. Author iterates fast via short directives ("yes apply," "redirect on this") — don't bury choices, but don't ask for permission on obvious mechanical edits either.
-- Prefer reusing existing primitives over inventing new ones (e.g., reserved tags for list membership instead of a separate list store; polars for query DSL instead of inventing one).
+- When there's a real design choice, propose tradeoffs before applying. Author iterates fast
+  via short directives ("yes apply," "redirect on this") — don't bury choices, but don't ask
+  permission on obvious mechanical edits either.
+- Prefer reusing existing primitives over inventing new ones (reserved tags for list
+  membership instead of a separate store; polars for the query DSL instead of a custom one).
 - Keep concerns in their own doc — don't expand `parsing.md` with non-parsing content.
-- Stale `.pyc` files in `src/task/__pycache__/` reference deleted modules (`db.py`, `models.py`, `parse.py`, `dates.py`, `command.py` — singular). Don't infer those still exist.
+- Stale `.pyc` files in `src/task/__pycache__/` may reference deleted modules (`db.py`,
+  `command.py` — singular). Don't infer those still exist.

@@ -33,7 +33,7 @@ def load_config(data_dir: Path) -> Config:
     if not config_file.exists():
         return Config()
 
-    data = tomllib.loads(config_file.read_text())
+    data = tomllib.loads(config_file.read_text(encoding="utf-8"))
     kwargs: dict = {}
 
     if "list" in data:

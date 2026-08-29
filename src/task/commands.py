@@ -10,9 +10,6 @@ from datetime import date as _date, datetime, timedelta as _timedelta
 from pathlib import Path
 from uuid import UUID
 
-import polars as pl
-
-import networkx as nx
 from rich.console import Console
 from rich.table import Table
 from task.models import CreatedEvent, DeletedEvent, DoneEvent, FieldChange, ParsedFilter, ParsedModification, Event, StartedEvent, StoppedEvent, Task, UpdatedEvent, UndoneEvent
@@ -30,17 +27,17 @@ def command_names() -> set[str]:
 
 
 def _read_state(d: Path) -> dict:
-    return json.loads((d / "state.json").read_text())
+    return json.loads((d / "state.json").read_text(encoding="utf-8"))
 
 
 def _init_context_dir(ctx: Path) -> None:
     ctx.mkdir(parents=True, exist_ok=True)
-    (ctx / "meta.json").write_text(json.dumps({"version": 1}, indent=2))
+    (ctx / "meta.json").write_text(json.dumps({"version": 1}, indent=2), encoding="utf-8", newline="\n")
     (ctx / "events.jsonl").touch()
-    (ctx / "tasks.json").write_text("[]")
+    (ctx / "tasks.json").write_text("[]", encoding="utf-8", newline="\n")
     (ctx / "recaps").mkdir(exist_ok=True)
-    (ctx / ".gitattributes").write_text("events.jsonl merge=union\n")
-    (ctx / ".gitignore").write_text("tasks.json\n")
+    (ctx / ".gitattributes").write_text("events.jsonl merge=union\n", encoding="utf-8", newline="\n")
+    (ctx / ".gitignore").write_text("tasks.json\n", encoding="utf-8", newline="\n")
 
 
 def _match_ids(tasks: list[Task], filter_args: ParsedFilter, verb: str) -> tuple[list[Task], str]:
@@ -67,8 +64,16 @@ def _parse_dep_ids(text: str) -> tuple[list[int], list[int]]:
     return to_add, to_remove
 
 
-def _build_graph(tasks: list[Task]) -> nx.DiGraph:
+def _is_acyclic(g) -> bool:
+    import networkx as nx
+
+    return nx.is_directed_acyclic_graph(g)
+
+
+def _build_graph(tasks: list[Task]):
     """DiGraph where edge X→Y means Y depends on X (X blocks Y)."""
+    import networkx as nx
+
     g = nx.DiGraph()
     g.add_nodes_from(t.uuid for t in tasks)
     for task in tasks:
@@ -297,6 +302,8 @@ def query_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModi
 
     if not records:
         return [], "No tasks."
+
+    import polars as pl
 
     try:
         df = pl.from_dicts(records, infer_schema_length=None)
@@ -546,7 +553,7 @@ def _compute_changes(
                 for u in to_add_uuids:
                     if u != task.uuid:
                         g.add_edge(u, task.uuid)
-                if not nx.is_directed_acyclic_graph(g):
+                if not _is_acyclic(g):
                     return {}, "Adding dependency would create a cycle."
         if new_deps != list(task.depends):
             changes["depends"] = FieldChange(before=list(task.depends), after=new_deps)
@@ -625,7 +632,7 @@ def depends_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMo
             for u in to_add_uuids:
                 if u != task.uuid:
                     g.add_edge(u, task.uuid)
-        if not nx.is_directed_acyclic_graph(g):
+        if not _is_acyclic(g):
             return [], "Adding dependency would create a cycle."
 
     events = []
@@ -675,7 +682,7 @@ def blocks_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedMod
             for u in blocker_uuids:
                 if u not in target_task.depends and u != target_uuid:
                     g.add_edge(u, target_uuid)
-        if not nx.is_directed_acyclic_graph(g):
+        if not _is_acyclic(g):
             return [], "Adding blocking relationship would create a cycle."
 
     events = []
@@ -744,7 +751,7 @@ def _ctx_use(d: Path, name: str | None) -> str:
     state_file = d / "state.json"
     state = _read_state(d)
     state["active"] = name
-    state_file.write_text(json.dumps(state, indent=2))
+    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8", newline="\n")
     return f"Active context: {name}"
 
 
@@ -1020,7 +1027,7 @@ def recap_(
         if answer.strip().lower() != "y":
             return [], "Recap not written."
 
-    out_path.write_text(content, encoding="utf-8")
+    out_path.write_text(content, encoding="utf-8", newline="\n")
     return [], f"Wrote {out_path}"
 
 
@@ -1085,9 +1092,25 @@ def init_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[l
     if state_file.exists():
         return [], f"Already initialized at {d}"
     d.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps({"version": 1, "active": "default"}, indent=2))
+    state_file.write_text(json.dumps({"version": 1, "active": "default"}, indent=2), encoding="utf-8", newline="\n")
     _init_context_dir(d / "default")
     return [], f"Initialized at {d}"
+
+
+def rebuild_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+    """Rebuild the task cache from the event log.
+
+    Usage: tsk rebuild
+
+    events.jsonl is canonical and tasks.json is only a cache. Use this if the
+    cache is stale or was damaged; nothing is lost by running it.
+    """
+    d = get_data_dir()
+    ctx = active_context(d)
+    tasks = rebuild_tasks(ctx)
+    assign_display_ids(tasks)
+    save_snapshot(ctx, tasks)
+    return [], f"Rebuilt {len(tasks)} task(s) from {ctx / 'events.jsonl'}."
 
 
 def run_(filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:

@@ -26,7 +26,7 @@ def active_context(data_dir: Path) -> Path:
     
     state = data_dir / "state.json"
     if state.exists():
-        active = json.loads(state.read_text())["active"]
+        active = json.loads(state.read_text(encoding="utf-8"))["active"]
     else:
         active = "default"
     return data_dir / active
@@ -38,7 +38,7 @@ def load_events(context: Path) -> list[Event]:
         return []
     return [
         _event_adapter.validate_json(line)
-        for line in events_file.read_text().splitlines()
+        for line in events_file.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
 
@@ -57,24 +57,31 @@ def rebuild_tasks(context: Path) -> list[Task]:
 
 def load_tasks(context: Path) -> list[Task]:
     cache = context / "tasks.json"
-    if not cache.exists():
-        tasks = rebuild_tasks(context)
-        if tasks:
-            save_snapshot(context, tasks)
-        return tasks
-    return [Task.model_validate(task) for task in json.loads(cache.read_text())]
+    if cache.exists():
+        try:
+            return [
+                Task.model_validate(task)
+                for task in json.loads(cache.read_text(encoding="utf-8"))
+            ]
+        except (ValueError, OSError):
+            pass  # unreadable or corrupt cache; events.jsonl is canonical, so rebuild
+    tasks = rebuild_tasks(context)
+    if tasks:
+        save_snapshot(context, tasks)
+    return tasks
 
 
 def append_event(context: Path, event: Event) -> None:
     context.mkdir(parents=True, exist_ok=True)
-    with open(context / "events.jsonl", "a") as file:
+    with open(context / "events.jsonl", "a", encoding="utf-8", newline="\n") as file:
         file.write(event.model_dump_json() + "\n")
 
 
 def save_snapshot(context: Path, tasks: list[Task]) -> None:
-    (context / "tasks.json").write_text(
-        json.dumps([task.model_dump(mode="json") for task in tasks], indent=2)
-    )
+    payload = json.dumps([task.model_dump(mode="json") for task in tasks], indent=2)
+    tmp = context / "tasks.json.tmp"
+    tmp.write_text(payload, encoding="utf-8", newline="\n")
+    os.replace(tmp, context / "tasks.json")
 
 
 def lazy_wait_transitions(tasks: list[Task], now: datetime | None = None) -> list[UpdatedEvent]:

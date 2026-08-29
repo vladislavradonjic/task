@@ -177,3 +177,78 @@ def test_assign_display_ids_includes_waiting():
     storage.assign_display_ids([t_waiting, t_pending])  # deliberately reversed
     assert t_pending.id == 1
     assert t_waiting.id == 2
+
+
+# ---------------------------------------------------------------------------
+# cache recovery: events.jsonl is canonical, tasks.json is disposable
+# ---------------------------------------------------------------------------
+
+def test_corrupt_cache_falls_back_to_the_event_log(tmp_data_dir):
+    task = Task(description="survives a bad cache")
+    storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    storage.save_snapshot(tmp_data_dir, [task])
+
+    (tmp_data_dir / "tasks.json").write_text('[{"description": "trunca', encoding="utf-8")
+
+    loaded = storage.load_tasks(tmp_data_dir)
+    assert [t.description for t in loaded] == ["survives a bad cache"]
+
+
+def test_corrupt_cache_is_rewritten_after_rebuild(tmp_data_dir):
+    task = Task(description="rewrite me")
+    storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    (tmp_data_dir / "tasks.json").write_text("not json at all", encoding="utf-8")
+
+    storage.load_tasks(tmp_data_dir)
+    assert json.loads((tmp_data_dir / "tasks.json").read_text(encoding="utf-8"))[0]["description"] == "rewrite me"
+
+
+def test_cache_holding_a_bad_task_shape_falls_back(tmp_data_dir):
+    task = Task(description="valid in the log")
+    storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    (tmp_data_dir / "tasks.json").write_text('[{"nonsense": true}]', encoding="utf-8")
+
+    assert [t.description for t in storage.load_tasks(tmp_data_dir)] == ["valid in the log"]
+
+
+def test_save_snapshot_leaves_no_temp_file(tmp_data_dir):
+    storage.save_snapshot(tmp_data_dir, [Task(description="x")])
+    assert not (tmp_data_dir / "tasks.json.tmp").exists()
+
+
+def test_save_snapshot_overwrites_in_place(tmp_data_dir):
+    storage.save_snapshot(tmp_data_dir, [Task(description="first")])
+    storage.save_snapshot(tmp_data_dir, [Task(description="second")])
+    assert [t.description for t in storage.load_tasks(tmp_data_dir)] == ["second"]
+
+
+# ---------------------------------------------------------------------------
+# encoding: the work machine defaults to cp1252, which cannot hold č/ć/đ
+# ---------------------------------------------------------------------------
+
+def test_non_latin1_description_round_trips(tmp_data_dir):
+    task = Task(description="počisti bazu — hitno", properties={"project": "poslovi.izveštaj"})
+    storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    storage.save_snapshot(tmp_data_dir, [task])
+
+    assert storage.rebuild_tasks(tmp_data_dir)[0].description == "počisti bazu — hitno"
+    assert storage.load_tasks(tmp_data_dir)[0].properties["project"] == "poslovi.izveštaj"
+
+
+def test_event_log_is_written_as_utf8(tmp_data_dir):
+    task = Task(description="ćirilica: đ, č, ž")
+    storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    raw = (tmp_data_dir / "events.jsonl").read_bytes()
+    assert "ćirilica: đ, č, ž".encode() in raw
+
+
+def test_event_log_uses_unix_newlines(tmp_data_dir):
+    for description in ("first", "second"):
+        task = Task(description=description)
+        storage.append_event(tmp_data_dir, CreatedEvent(task_id=task.uuid, snapshot=task))
+    assert b"\r\n" not in (tmp_data_dir / "events.jsonl").read_bytes()
+
+
+def test_snapshot_uses_unix_newlines(tmp_data_dir):
+    storage.save_snapshot(tmp_data_dir, [Task(description="a"), Task(description="b")])
+    assert b"\r\n" not in (tmp_data_dir / "tasks.json").read_bytes()
