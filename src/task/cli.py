@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import shlex
 import sys
+from datetime import datetime
 
 from rich.console import Console
 from task import commands, storage
@@ -22,7 +24,117 @@ def _load_and_prep(context, cfg) -> list:
     return tasks
 
 
-def _render_default_list(context, tasks: list, cfg, message: str = "") -> None:
+# Ghost-text completion fires on the value half of these properties — see
+# docs/projects.md. Deliberately not command-aware: `kind:` is only legal on `log` and
+# on a row `modify`, but parsing a half-typed line on every keystroke buys nothing over
+# letting the command reject what you had to press Tab to accept.
+_SUGGESTABLE = re.compile(r'(?:^|\s)(project|kind):(\S*)$')
+
+
+def _make_suggester(cfg):
+    """Ghost-text source for `project:` and `kind:`, or None if it cannot be built.
+
+    Holds its candidate pools in a mutable attribute so the REPL can refresh them after
+    a command without rebuilding the prompt session.
+    """
+    if not cfg.suggest.enabled:
+        return None
+    try:
+        from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
+    except ImportError:
+        return None
+    from task.vocab import suggest
+
+    class _VocabSuggester(AutoSuggest):
+        def __init__(self) -> None:
+            self.pools: dict[str, list] = {}
+            self.threshold = cfg.suggest.threshold
+            # Ctrl-G has no built-in notion of "dismissed" — the suggestion is
+            # recomputed from the buffer on every keystroke. Remembering the dismissed
+            # text keeps it gone until the line changes, then lets it come back.
+            self._dismissed: str | None = None
+
+        def dismiss(self, text: str) -> None:
+            self._dismissed = text
+
+        def get_suggestion(self, buffer, document):
+            if document.text == self._dismissed:
+                return None
+            m = _SUGGESTABLE.search(document.text_before_cursor)
+            if not m:
+                return None
+            prop, typed = m.group(1), m.group(2)
+            name = suggest(typed, self.pools.get(prop, []), self.threshold)
+            return None if name is None else Suggestion(name[len(typed):])
+
+    return _VocabSuggester()
+
+
+def _make_prompt_session(suggester):
+    """A prompt_toolkit session with ghost text, or None to fall back to `input()`.
+
+    prompt_toolkit is imported here and nowhere else. It is 3.3 MB across 145 files — a
+    real cost under the work machine's scanner — so `tsk run` pays it once per session
+    and one-shot commands never import it at all. The None fallback covers a missing
+    install and a non-terminal stdin, which is also what lets the tests drive the loop.
+    """
+    if suggester is None or not sys.stdin.isatty():
+        return None
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.filters import has_suggestion
+        from prompt_toolkit.key_binding import KeyBindings
+    except ImportError:
+        return None
+
+    bindings = KeyBindings()
+
+    @bindings.add("tab", filter=has_suggestion)
+    def _accept(event) -> None:
+        event.current_buffer.insert_text(event.current_buffer.suggestion.text)
+
+    @bindings.add("tab")
+    def _ignore(event) -> None:
+        """Nothing to complete. A literal tab in a command line is never wanted."""
+
+    # Ctrl-G rather than Esc: Esc is the Meta prefix, so prompt_toolkit must wait out
+    # the escape timeout before it can tell a bare Esc from the start of an arrow key.
+    @bindings.add("c-g", filter=has_suggestion)
+    def _dismiss(event) -> None:
+        suggester.dismiss(event.current_buffer.text)
+
+    return PromptSession(auto_suggest=suggester, key_bindings=bindings)
+
+
+def _read_line(session, prompt: str = "tsk> ") -> str:
+    """One line of input, with ghost text when the terminal supports it."""
+    return input(prompt) if session is None else session.prompt(prompt)
+
+
+def _refresh_suggestions(suggester, tasks: list, entries: list, cfg) -> None:
+    """Rebuild both candidate pools from state already in memory.
+
+    Called wherever the standing view is rendered, which is exactly where the state
+    behind them can have changed. `cfg` is read here rather than captured at
+    construction because config.toml may have been edited since the REPL started.
+    """
+    if suggester is None:
+        return
+    from task.vocab import kind_usage, project_usage, window_start
+
+    suggester.threshold = cfg.suggest.threshold
+    day_starts_at = cfg.timesheet.day_starts_at
+    try:
+        since = window_start(cfg.projects.window, datetime.now())
+    except ValueError:
+        since = None  # a malformed window in config.toml must not break the prompt
+    suggester.pools = {
+        "project": project_usage(tasks, entries, since, day_starts_at),
+        "kind": kind_usage(entries, cfg.timesheet.kinds, day_starts_at),
+    }
+
+
+def _render_default_list(context, tasks: list, cfg, message: str = "", suggester=None) -> None:
     """The REPL's standing view: today's tasks, then today's timesheet.
 
     The timesheet lives here rather than behind a command because an unseen sheet does
@@ -38,13 +150,16 @@ def _render_default_list(context, tasks: list, cfg, message: str = "") -> None:
     _, day_msg = commands.day_(entries, tasks, parse_filter([]), parse_modification([]), cfg)
     if day_msg:
         print(day_msg)
+    _refresh_suggestions(suggester, tasks, entries, cfg)
 
 
 # Commands that do their own I/O and take no task list (see CLAUDE.md, functional core).
 _SHELL_COMMANDS = {"init", "help", "context", "undo", "rebuild"}
 
 # Timesheet commands: pure, but take (entries, tasks, filter, modify). See docs/timesheet.md.
-_ENTRY_COMMANDS = {"log", "day"}
+# `projects` is here because the project namespace spans both entities, so listing it
+# needs the entries as well as the tasks — see docs/projects.md.
+_ENTRY_COMMANDS = {"log", "day", "projects"}
 
 # Shared names. `tsk c delete` addresses a timesheet row, `tsk 3 delete` a task, so the
 # shell routes on which kind of id the filter carries.
@@ -95,12 +210,15 @@ def _repl_loop(d) -> None:
     cfg, cfg_stamp = _load_cfg(d)
     context = storage.active_context(d)
 
+    suggester = _make_suggester(cfg)
+    session = _make_prompt_session(suggester)
+
     tasks = _load_and_prep(context, cfg)
-    _render_default_list(context, tasks, cfg)
+    _render_default_list(context, tasks, cfg, suggester=suggester)
 
     while True:
         try:
-            line = input("tsk> ").strip()
+            line = _read_line(session).strip()
         except EOFError:
             print()
             break
@@ -155,7 +273,7 @@ def _repl_loop(d) -> None:
                 if new_context != context or command in ("undo", "rebuild"):
                     context = new_context
                     tasks = _load_and_prep(context, cfg)
-                    _render_default_list(context, tasks, cfg, message)
+                    _render_default_list(context, tasks, cfg, message, suggester)
                 elif message:
                     print(message)
                 continue
@@ -166,7 +284,7 @@ def _repl_loop(d) -> None:
                     entry_fn, context, parsed_filter, parsed_modification, cfg)
                 if changed:
                     tasks = _load_and_prep(context, cfg)
-                    _render_default_list(context, tasks, cfg, message)
+                    _render_default_list(context, tasks, cfg, message, suggester)
                 elif message:
                     print(message)
                 continue
@@ -186,7 +304,7 @@ def _repl_loop(d) -> None:
             if events:
                 storage.save_snapshot(context, tasks)
                 tasks = _load_and_prep(context, cfg)
-                _render_default_list(context, tasks, cfg, message)
+                _render_default_list(context, tasks, cfg, message, suggester)
             elif message:
                 print(message)
 

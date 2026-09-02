@@ -470,3 +470,90 @@ def test_empty_timesheet_still_nudges(tmp_data_dir, monkeypatch, capsys):
     _drive(monkeypatch, ["add a task"])
     cli._repl_loop(tmp_data_dir)
     assert "Nothing logged" in capsys.readouterr().out
+
+
+# --- ghost-text completion ---------------------------------------------------
+#
+# The suggester is exercised through prompt_toolkit's own Document, which is what it
+# will be handed at runtime; the pools are filled the way _refresh_suggestions fills
+# them. See docs/projects.md.
+
+prompt_toolkit = pytest.importorskip("prompt_toolkit")
+
+
+def _suggester_with(tasks=(), entries=(), cfg=None):
+    from task.config import Config
+
+    cfg = cfg or Config()
+    suggester = cli._make_suggester(cfg)
+    cli._refresh_suggestions(suggester, list(tasks), list(entries), cfg)
+    return suggester
+
+
+def _ghost(suggester, text):
+    from prompt_toolkit.document import Document
+
+    suggestion = suggester.get_suggestion(None, Document(text, len(text)))
+    return None if suggestion is None else suggestion.text
+
+
+def _task(project):
+    from task.models import Task
+
+    return Task(description="x", properties={"project": project})
+
+
+def test_a_project_prefix_is_completed():
+    s = _suggester_with(tasks=[_task("arabia")])
+    assert _ghost(s, "add thing project:ara") == "bia"
+
+
+def test_completion_only_fires_on_the_value_half():
+    s = _suggester_with(tasks=[_task("arabia")])
+    assert _ghost(s, "add thing proj") is None
+    assert _ghost(s, "add arabia") is None
+
+
+def test_a_weak_fragment_offers_nothing():
+    """The point of the threshold: project:B with no B project stays silent."""
+    s = _suggester_with(tasks=[_task("arabia"), _task("albania")])
+    assert _ghost(s, "add thing project:b") is None
+
+
+def test_kinds_complete_from_config_not_from_use():
+    """No rows logged at all, yet every configured kind is still offered."""
+    s = _suggester_with()
+    assert _ghost(s, "log standup kind:me") == "eting"
+
+
+def test_an_unknown_property_is_not_completed():
+    s = _suggester_with(tasks=[_task("arabia")])
+    assert _ghost(s, "add thing priority:a") is None
+
+
+def test_ctrl_g_dismisses_until_the_line_changes():
+    s = _suggester_with(tasks=[_task("arabia")])
+    assert _ghost(s, "add thing project:ara") == "bia"
+    s.dismiss("add thing project:ara")
+    assert _ghost(s, "add thing project:ara") is None
+    # One more character is a different line, so the suggestion comes back.
+    assert _ghost(s, "add thing project:arab") == "ia"
+
+
+def test_disabling_suggestions_builds_no_suggester():
+    from task.config import Config, SuggestConfig
+
+    assert cli._make_suggester(Config(suggest=SuggestConfig(enabled=False))) is None
+
+
+def test_a_malformed_window_in_config_does_not_break_the_prompt():
+    from task.config import Config, ProjectsConfig
+
+    cfg = Config(projects=ProjectsConfig(window="banana"))
+    s = _suggester_with(tasks=[_task("arabia")], cfg=cfg)
+    assert _ghost(s, "add thing project:ara") == "bia"
+
+
+def test_the_prompt_session_is_skipped_off_a_terminal():
+    """This fallback is what lets the REPL tests drive the loop through input()."""
+    assert cli._make_prompt_session(_suggester_with()) is None

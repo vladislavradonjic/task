@@ -69,9 +69,32 @@ beneath it.
 |---|---|
 | `exit` / `quit` / Ctrl-D | leave |
 | Ctrl-C | cancel the current line, stay in the session |
+| Tab | accept the completion being offered |
+| Ctrl-G | dismiss it |
 
 `init` and `run` are refused inside a session. `config.toml` is re-read when it changes,
 so edits take effect without restarting.
+
+### Completion
+
+Typing after `project:` or `kind:` offers the best match as grey text after the cursor.
+Tab accepts it; Ctrl-G dismisses it until you change the line; typing on simply
+re-matches.
+
+    tsk> log standup kind:me|eting
+    tsk> add write it up project:work.a|cme
+
+Only one candidate is ever offered, and only when it is a good enough match — below
+`[suggest] threshold` you get nothing rather than a guess. With projects `arabia`,
+`albania` and `australia`, `project:a` offers whichever you used most recently and
+`project:b` offers nothing at all. One or two letters match by prefix only; from three
+letters on, `arb` will find `arabia`.
+
+Projects come from what you have actually used, within the `[projects] window`. Kinds
+come from `[timesheet] kinds` and are always offered, even ones you have never logged —
+they are legal values whether or not you have got round to them.
+
+Set `[suggest] enabled = false` for a plain prompt with no completion.
 
 This mode exists because starting Python once per command is expensive on machines where
 security software scans every file read. It is the intended way to use `tsk` there.
@@ -303,6 +326,30 @@ or let it default to now.
 
 ---
 
+## Projects
+
+    tsk projects [<window>|all]
+
+Every project you have used lately, with how many tasks and how many timesheet rows
+carry it, and when it was last touched. Tasks and rows are counted separately because
+a project can be all one and none of the other.
+
+The window is a lookback, so it reads backwards: `3m` is the last three months, not
+three months from now. It defaults to `[projects] window` and takes an argument to
+override — `tsk projects 6w`, `tsk projects all`, or a date to count from.
+
+    tsk projects            → the configured window, 3 months out of the box
+    tsk projects 2w         → just the current fortnight
+    tsk projects all        → everything, however old
+
+Pending and waiting tasks always count, whatever the window: a task you have not
+finished is current work however long ago you wrote it. A finished task counts at the
+date you finished it, so an old task closed yesterday keeps its project on the list.
+
+This is also the pool that `project:` completion draws from in `tsk run`.
+
+---
+
 ## Recap
 
     tsk recap day|week|month
@@ -375,6 +422,16 @@ day_starts_at = "04:00"
 standup = { description = "team standup", kind = "meeting", project = "internal" }
 email   = { description = "email + teams", kind = "chat" }
 mtg     = { kind = "meeting" }
+
+[projects]
+# How far back `tsk projects` looks, and the pool completion draws project names from.
+# Offsets read backwards: "3m" is the last three months. "all" removes the limit.
+window = "3m"
+
+[suggest]
+# Completion offers nothing below this similarity, rather than a guess. 0.0-1.0.
+threshold = 0.6
+enabled = true
 
 [recap]
 output_dir = "~/Documents/recaps"

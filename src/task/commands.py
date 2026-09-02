@@ -954,23 +954,51 @@ def tags_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModif
     return [], ""
 
 
-def projects_(tasks: list[Task], filter_args: ParsedFilter, modify_args: ParsedModification) -> tuple[list[Event], str]:
+def projects_(
+    entries: list[Entry],
+    tasks: list[Task],
+    filter_args: ParsedFilter,
+    modify_args: ParsedModification,
+    cfg,
+) -> tuple[list[Event], str]:
     """List projects in use.
 
-    Usage: tsk projects
+    Usage: tsk projects [<window>|all]
 
-    Shows each project and how many pending/waiting tasks are assigned to it, sorted by count.
+    Counts tasks and timesheet rows per project over a trailing window — three months
+    by default, `[projects] window` in config.toml, or an argument like `6m`, `2w` or
+    `all`. Pending and waiting tasks always count, whatever the window.
     """
-    active = [t for t in tasks if t.status in ("pending", "waiting")]
-    counts: dict[str, int] = {}
-    for task in active:
-        if proj := task.properties.get("project"):
-            counts[proj] = counts.get(proj, 0) + 1
+    from task.vocab import project_usage, window_start
 
-    if not counts:
-        return [], "No projects in use."
+    raw = modify_args.description.strip() or cfg.projects.window
+    now = datetime.now()
+    try:
+        since = window_start(raw, now)
+    except ValueError as e:
+        return [], str(e)
 
-    _render_count_table(counts, "Project")
+    rows = project_usage(tasks, entries, since, cfg.timesheet.day_starts_at)
+    if not rows:
+        return [], "No projects in use." if since is None else f"No projects in use in the last {raw}."
+
+    table = Table(
+        show_header=True,
+        title="Projects, all time" if since is None else f"Projects, last {raw}",
+        title_justify="left",
+    )
+    table.add_column("Project")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Rows", justify="right")
+    table.add_column("Last used")
+    for u in rows:
+        # `_fmt_day` omits the year, which only reads as ambiguous once the window is
+        # wide enough to reach back past January.
+        last = _fmt_day(u.last_used)
+        if u.last_used.year != now.year:
+            last += f" {u.last_used.year}"
+        table.add_row(u.name, str(u.tasks or ""), str(u.entries or ""), last)
+    Console().print(table)
     return [], ""
 
 

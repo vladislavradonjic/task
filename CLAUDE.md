@@ -42,12 +42,14 @@ machine's data has no backup and no remote event history to restore from**, so s
 - `src/task/storage.py` — data dir resolution, snapshot read/rebuild, event append.
 - `src/task/events.py` — `apply_event` reducer; per-event inverse logic for `undo`.
 - `src/task/urgency.py` — urgency score + topological blocker bump.
+- `src/task/vocab.py` — pure project/kind vocabularies: usage counts, recency, fuzzy
+  ranking for completion. Shared by `projects_` and the REPL's suggester.
 - `src/task/timesheet.py` — pure timeline resolution for timesheet entries: logical days,
   derived start times, cascade, gaps, rollups. No I/O, no config, no rendering.
 - `src/task/config.py` — `config.toml` loading.
 - `src/task/dates.py` — date and duration parsing.
 - `src/task/templates/` — Jinja2 recap templates (`day`/`week`/`month`), shipped in the wheel.
-- `tests/` — 310 tests mirroring `src/task/`; `conftest.py` holds shared fixtures.
+- `tests/` — 498 tests mirroring `src/task/`; `conftest.py` holds shared fixtures.
   `test_repl.py` covers the REPL loop, including a differential test asserting the
   REPL and one-shot mode emit identical events for the same script. Keep it green.
 
@@ -57,13 +59,15 @@ Commands: `add`, `list`, `query`, `modify`, `done`, `delete`, `depends`, `blocks
 tracking was removed in v1.4.
 
 **Two command signature families.** Task commands take `(tasks, filter, modify)`; timesheet
-commands take `(entries, tasks, filter, modify, cfg)`. Both are pure. The shell routes the shared
+commands take `(entries, tasks, filter, modify, cfg)`. `projects` is in the second family
+despite not being a timesheet command: the project namespace spans both entities, so
+listing it needs both. Both families are pure. The shell routes the shared
 names `modify`/`delete` on whether the filter carries letters (rows) or digits (tasks);
 `_entry_modify`/`_entry_delete` lead with an underscore so `command_names()` skips them.
 
 ## Tooling
 
-- Run tests with `uv run python -m pytest tests/ -q`. 310 tests, ~0.4 s.
+- Run tests with `uv run python -m pytest tests/ -q`. 498 tests, ~0.6 s.
 - Lint with `uvx ruff check src/ tests/` — ruff is **not** a dev dependency, so
   `uv run ruff` fails. There is no ruff config; the default ruleset reports ~95
   pre-existing findings (import order, naive datetimes, blind excepts). They are not
@@ -100,6 +104,8 @@ plain ancestor of `master` with nothing unique.
   entity from `Task`, derived start times, letter addressing, kinds, shortcuts.
 - `docs/time-tracking.md` — **superseded** by `timesheet.md`. Describes the `start`/`stop`/`log`
   session model being removed; kept only to explain legacy events in old logs.
+- `docs/projects.md` — `projects` command and REPL ghost-text completion: the open vs
+  closed vocabulary asymmetry, the tiered fuzzy score, key bindings, prompt_toolkit cost.
 - `docs/list.md` — `list` rendering: default visible set, data-driven columns, flag suffix,
   `rich.Table` wrap policy, color.
 - `docs/urgency.md` — urgency factors and coefficients, topological bump, never stored.
@@ -120,11 +126,13 @@ plain ancestor of `master` with nothing unique.
 - **Never assume a TTY.** Windows console and the Linux terminal differ on clear-screen,
   ANSI colour, and Unicode box-drawing. `rich` handles most of it; anything outside `rich`
   is suspect.
-- **Startup imports are a cost on Windows, not a rounding error.** `polars` and `networkx`
-  are imported *inside* the functions that need them (`query_`, `_is_acyclic`,
-  `_build_graph`, `compute_urgency`), following the same idiom as `storage.data_dir()`.
+- **Startup imports are a cost on Windows, not a rounding error.** `polars`, `networkx`
+  and `prompt_toolkit` are imported *inside* the functions that need them (`query_`,
+  `_is_acyclic`, `_build_graph`, `compute_urgency`, `_make_prompt_session`), following
+  the same idiom as `storage.data_dir()`. `prompt_toolkit` is 3.3 MB across 145 files,
+  so only `tsk run` pays for it, once per session — see docs/projects.md.
   Keep them that way, and prefer lazy imports for anything similarly heavy. `import
-  task.cli` is ~90 ms; it was 176 ms with both at module level.
+  task.cli` is ~90 ms; it was 176 ms with polars and networkx at module level.
 - Use `pathlib` and `os.replace` for atomic swaps; `Path.rename` fails on Windows when the
   target exists.
 
